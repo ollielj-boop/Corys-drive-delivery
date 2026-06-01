@@ -33,11 +33,27 @@ interface Shelf {
   gapLeft: number
   gapRight: number
   side: "left" | "right"
-  projecting?: boolean   // beam currently animating
-  delivered?: boolean    // permanently lit after delivery
+  projecting?: boolean
+  delivered?: boolean
+  // projector knock animation
+  knocked?: boolean
+  knockAngle?: number
+  knockTimer?: number
 }
 
-// Pre-generate city buildings once so they don't flicker
+interface Particle {
+  x: number
+  y: number
+  vx: number
+  vy: number
+  life: number
+  maxLife: number
+  color: string
+  type: "spark" | "shard"
+  angle?: number
+  len?: number
+}
+
 interface Building {
   x: number
   w: number
@@ -66,19 +82,20 @@ export default function DriveGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const instrCanvasRef = useRef<HTMLCanvasElement>(null)
   const [screen, setScreen] = useState<"home" | "instructions" | "game">("home")
-
-  // Pre-generated static city buildings
   const buildingsRef = useRef<Building[]>(generateBuildings())
+  const particlesRef = useRef<Particle[]>([])
 
   const gameState = useRef({
     level: 0,
     state: "idle" as
       | "idle"
-      | "throwing"
-      | "arcing"
-      | "falling"
-      | "projecting"
-      | "miss"
+      | "arcing"         // drive flying toward projector (success path)
+      | "falling"        // drive falling into gap
+      | "projecting"     // projector lighting up
+      | "miss_arc"       // drive flying but will miss (wrong position)
+      | "shattering"     // drive hit floor (miss)
+      | "knocking"       // drive hit projector wrong (near miss)
+      | "miss"           // flash timer running
       | "gameover",
     arrowX: 0,
     arrowDir: 1,
@@ -92,6 +109,12 @@ export default function DriveGame() {
     arcStartY: 0,
     arcEndX: 0,
     arcEndY: 0,
+    // For miss arc — drive flies to floor
+    missArcProgress: 0,
+    missArcStartX: 0,
+    missArcStartY: 0,
+    missArcEndX: 0,
+    missArcEndY: 0,
     flashTimer: 0,
     missArrowX: -1,
     totalDeliveries: 0,
@@ -99,6 +122,8 @@ export default function DriveGame() {
     projectTimer: 0,
     shelves: [] as Shelf[],
     characterThrowFrame: 0,
+    shatterTimer: 0,
+    knockTimer: 0,
   })
 
   const scaleShell = useCallback(() => {
@@ -138,7 +163,11 @@ export default function DriveGame() {
       } else {
         gapLeft = side === "left" ? CW - gw - 26 : 26
       }
-      shelves.push({ y: shelfY, gapLeft, gapRight: gapLeft + gw, side, projecting: false, delivered: false })
+      shelves.push({
+        y: shelfY, gapLeft, gapRight: gapLeft + gw, side,
+        projecting: false, delivered: false,
+        knocked: false, knockAngle: 0, knockTimer: 0
+      })
     }
     gameState.current.shelves = shelves
   }, [])
@@ -151,34 +180,90 @@ export default function DriveGame() {
     gs.arrowSpeed = ARROW_SPEED_BASE + (gs.extraMode ? 4 : lv) * 0.9
   }, [])
 
-  const initLevel = useCallback(
-    (lv: number, keepTotal: boolean) => {
-      const gs = gameState.current
-      gs.level = lv
-      gs.state = "idle"
-      gs.characterThrowFrame = 0
-      gs.flashTimer = 0
-      gs.missArrowX = -1
-      gs.driveVX = 0
-      gs.driveVY = 0
-      gs.arcProgress = 0
-      gs.projectTimer = 0
-      if (!keepTotal) {
-        gs.totalDeliveries = 0
-        gs.extraMode = false
-        // Full reset — clear all delivery/projecting state
-        gs.shelves.forEach((shelf) => {
-          shelf.projecting = false
-          shelf.delivered = false
-        })
-      }
-      const s = gs.shelves[lv]
-      gs.driveX = s.side === "left" ? 40 : CW - 40
-      gs.driveY = s.y - DRIVE_H
-      initArrow(lv)
-    },
-    [initArrow]
-  )
+  const initLevel = useCallback((lv: number, keepTotal: boolean) => {
+    const gs = gameState.current
+    gs.level = lv
+    gs.state = "idle"
+    gs.characterThrowFrame = 0
+    gs.flashTimer = 0
+    gs.missArrowX = -1
+    gs.driveVX = 0
+    gs.driveVY = 0
+    gs.arcProgress = 0
+    gs.missArcProgress = 0
+    gs.projectTimer = 0
+    gs.shatterTimer = 0
+    gs.knockTimer = 0
+    particlesRef.current = []
+    if (!keepTotal) {
+      gs.totalDeliveries = 0
+      gs.extraMode = false
+      gs.shelves.forEach((s) => {
+        s.projecting = false
+        s.delivered = false
+        s.knocked = false
+        s.knockAngle = 0
+        s.knockTimer = 0
+      })
+    }
+    const s = gs.shelves[lv]
+    gs.driveX = s.side === "left" ? 40 : CW - 40
+    gs.driveY = s.y - DRIVE_H
+    initArrow(lv)
+  }, [initArrow])
+
+  const spawnShatterParticles = useCallback((x: number, y: number) => {
+    const ps = particlesRef.current
+    // Shards of drive casing
+    for (let i = 0; i < 8; i++) {
+      const angle = (Math.PI * 2 * i) / 8 + (Math.random() - 0.5) * 0.5
+      const speed = 1.5 + Math.random() * 2.5
+      ps.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 1,
+        life: 40 + Math.random() * 20,
+        maxLife: 60,
+        color: "#888",
+        type: "shard",
+        angle: Math.random() * Math.PI * 2,
+        len: 3 + Math.random() * 4,
+      })
+    }
+    // Electric sparks
+    for (let i = 0; i < 12; i++) {
+      const angle = (Math.random() * Math.PI * 2)
+      const speed = 0.5 + Math.random() * 3
+      ps.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 0.5,
+        life: 15 + Math.random() * 15,
+        maxLife: 30,
+        color: Math.random() > 0.5 ? "#00d4ff" : "#ffff00",
+        type: "spark",
+      })
+    }
+  }, [])
+
+  const spawnKnockParticles = useCallback((x: number, y: number) => {
+    const ps = particlesRef.current
+    // Sparks from sides of projector
+    for (let i = 0; i < 16; i++) {
+      const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.5
+      const speed = 1 + Math.random() * 3
+      ps.push({
+        x: x + (Math.random() - 0.5) * 20,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 20 + Math.random() * 20,
+        maxLife: 40,
+        color: Math.random() > 0.3 ? "#00d4ff" : "#ffffff",
+        type: "spark",
+      })
+    }
+  }, [])
 
   const startGame = useCallback(() => {
     setScreen("game")
@@ -191,28 +276,55 @@ export default function DriveGame() {
     if (gs.state !== "idle") return
     const s = gs.shelves[gs.level]
     const inGap = gs.arrowX >= s.gapLeft && gs.arrowX <= s.gapRight
+
+    // Check if near projector (within 30px either side of gap)
+    const nearProjector = gs.arrowX >= s.gapLeft - 30 && gs.arrowX <= s.gapRight + 30 && !inGap
+
     gs.characterThrowFrame = 1
+    gs.missArrowX = gs.arrowX
 
     if (inGap) {
+      // Perfect throw — arc to projector gap
       gs.state = "arcing"
       gs.arcProgress = 0
       gs.arcStartX = gs.driveX
       gs.arcStartY = gs.driveY
       gs.arcEndX = (s.gapLeft + s.gapRight) / 2
       gs.arcEndY = s.y - DRIVE_H / 2
-      gs.missArrowX = -1
+    } else if (nearProjector) {
+      // Near miss — drive hits projector body and knocks it
+      gs.state = "arcing"
+      gs.arcProgress = 0
+      gs.arcStartX = gs.driveX
+      gs.arcStartY = gs.driveY
+      // Aim at projector body
+      const projX = s.side === "left" ? s.gapRight + 20 : s.gapLeft - 20
+      gs.arcEndX = projX
+      gs.arcEndY = s.y - 35
+      // Mark this as a knock arc (we use missArrowX !== -1 and nearProjector combined)
+      // We'll use a special flag
+      ;(gs as any).throwType = "knock"
     } else {
-      gs.state = "miss"
-      gs.flashTimer = 80
-      gs.missArrowX = gs.arrowX
-      gs.driveVX = s.side === "left" ? THROW_SPEED * 0.3 : -THROW_SPEED * 0.3
+      // Full miss — arc to floor in front of character
+      gs.state = "miss_arc"
+      gs.missArcProgress = 0
+      gs.missArcStartX = gs.driveX
+      gs.missArcStartY = gs.driveY
+      // Land on the shelf surface short of the gap
+      const landX = s.side === "left"
+        ? gs.driveX + (s.gapLeft - gs.driveX) * 0.6
+        : gs.driveX - (gs.driveX - s.gapRight) * 0.6
+      gs.missArcEndX = landX
+      gs.missArcEndY = s.y - DRIVE_H
+      ;(gs as any).throwType = "miss"
     }
-  }, [])
+  }, [spawnShatterParticles, spawnKnockParticles])
 
   const doRetry = useCallback(() => {
     buildLayout(false)
     initLevel(0, false)
     buildingsRef.current = generateBuildings()
+    particlesRef.current = []
   }, [buildLayout, initLevel])
 
   // Instruction screen
@@ -223,87 +335,49 @@ export default function DriveGame() {
     const x = c.getContext("2d")
     if (!x) return
 
-    x.fillStyle = COLORS.darkest
-    x.fillRect(0, 0, CW, CH)
+    x.fillStyle = COLORS.darkest; x.fillRect(0, 0, CW, CH)
+    x.fillStyle = COLORS.dark; x.fillRect(20, 40, 320, 56)
+    x.strokeStyle = COLORS.light; x.lineWidth = 3; x.strokeRect(20, 40, 320, 56)
+    x.fillStyle = COLORS.lightest; x.font = '14px "Press Start 2P", monospace'
+    x.textAlign = "center"; x.fillText("HOW TO PLAY", CW / 2, 76)
 
-    x.fillStyle = COLORS.dark
-    x.fillRect(20, 40, 320, 56)
-    x.strokeStyle = COLORS.light
-    x.lineWidth = 3
-    x.strokeRect(20, 40, 320, 56)
-    x.fillStyle = COLORS.lightest
-    x.font = '14px "Press Start 2P", monospace'
-    x.textAlign = "center"
-    x.fillText("HOW TO PLAY", CW / 2, 76)
-
-    x.fillStyle = COLORS.darkest
-    x.fillRect(20, 130, 320, 280)
-    x.strokeStyle = COLORS.dark
-    x.lineWidth = 2
-    x.strokeRect(20, 130, 320, 280)
+    x.fillStyle = COLORS.darkest; x.fillRect(20, 130, 320, 300)
+    x.strokeStyle = COLORS.dark; x.lineWidth = 2; x.strokeRect(20, 130, 320, 300)
 
     x.fillStyle = COLORS.light
-    x.beginPath()
-    x.moveTo(CW / 2, 168)
-    x.lineTo(CW / 2 - 14, 148)
-    x.lineTo(CW / 2 + 14, 148)
-    x.closePath()
-    x.fill()
-    x.fillStyle = COLORS.lightest
-    x.font = '7px "Press Start 2P", monospace'
-    x.fillText("AN ARROW SWEEPS", CW / 2, 190)
-    x.fillText("BACK AND FORTH", CW / 2, 204)
+    x.beginPath(); x.moveTo(CW/2, 168); x.lineTo(CW/2-14, 148); x.lineTo(CW/2+14, 148)
+    x.closePath(); x.fill()
+    x.fillStyle = COLORS.lightest; x.font = '7px "Press Start 2P", monospace'
+    x.fillText("AN ARROW SWEEPS", CW/2, 190); x.fillText("BACK AND FORTH", CW/2, 204)
 
-    x.strokeStyle = COLORS.dark
-    x.lineWidth = 1
+    x.strokeStyle = COLORS.dark; x.lineWidth = 1
     x.beginPath(); x.moveTo(40, 218); x.lineTo(320, 218); x.stroke()
 
-    x.fillStyle = COLORS.lightest
-    x.fillRect(CW / 2 - 20, 228, 40, 12)
-    x.fillStyle = "#00ff66"
-    x.fillRect(CW / 2 - 18, 226, 36, 4)
-    x.fillStyle = "#00ff66"
-    x.font = '5px "Press Start 2P", monospace'
-    x.fillText("DRIVE INPUT", CW / 2, 224)
-    x.fillStyle = COLORS.lightest
-    x.font = '7px "Press Start 2P", monospace'
-    x.fillText("STOP THE ARROW", CW / 2, 256)
-    x.fillText("OVER THE GREEN SLOT", CW / 2, 270)
+    x.fillStyle = COLORS.lightest; x.fillRect(CW/2-20, 228, 40, 12)
+    x.fillStyle = "#00ff66"; x.fillRect(CW/2-18, 226, 36, 4)
+    x.fillStyle = COLORS.lightest; x.font = '7px "Press Start 2P", monospace'
+    x.fillText("STOP THE ARROW", CW/2, 256); x.fillText("OVER THE GREEN SLOT", CW/2, 270)
 
     x.beginPath(); x.moveTo(40, 284); x.lineTo(320, 284); x.stroke()
 
-    x.fillStyle = COLORS.mid
-    x.fillRect(CW / 2 - 10, 294, 20, 14)
-    x.fillStyle = COLORS.lightest
-    x.fillRect(CW / 2 - 8, 296, 6, 4)
-    x.fillStyle = COLORS.lightest
-    x.font = '7px "Press Start 2P", monospace'
-    x.fillText("CLICK THROW / SPACE", CW / 2, 326)
-    x.fillText("TO THROW DRIVE", CW / 2, 340)
+    x.fillStyle = COLORS.mid; x.fillRect(CW/2-10, 294, 20, 14)
+    x.fillStyle = COLORS.lightest; x.fillRect(CW/2-8, 296, 6, 4)
+    x.fillStyle = COLORS.lightest; x.font = '7px "Press Start 2P", monospace'
+    x.fillText("CLICK THROW / SPACE", CW/2, 326); x.fillText("TO THROW DRIVE", CW/2, 340)
 
     x.beginPath(); x.moveTo(40, 354); x.lineTo(320, 354); x.stroke()
 
+    x.fillStyle = COLORS.light; x.font = '7px "Press Start 2P", monospace'
+    x.fillText("LAND THE DRIVE IN THE", CW/2, 376)
+    x.fillText("PROJECTOR SLOT!", CW/2, 390)
+    x.fillText("MISS = DRIVE SMASHES!", CW/2, 410)
+
+    x.fillStyle = COLORS.lightest; x.font = '8px "Press Start 2P", monospace'
+    x.fillText("TAP / CLICK TO START", CW/2, 480)
     x.fillStyle = COLORS.light
-    x.font = '7px "Press Start 2P", monospace'
-    x.fillText("THROW THE HARD DRIVE", CW / 2, 376)
-    x.fillText("INTO THE DRIVE INPUT", CW / 2, 390)
-    x.fillText("TO ADVANCE!", CW / 2, 404)
-
-    x.fillStyle = COLORS.lightest
-    x.font = '8px "Press Start 2P", monospace'
-    x.fillText("TAP / CLICK TO START", CW / 2, 480)
-
-    x.fillStyle = COLORS.light
-    x.fillRect(CW / 2 - 12, 496, 6, 6)
-    x.fillRect(CW / 2 - 3, 496, 6, 6)
-    x.fillRect(CW / 2 + 6, 496, 6, 6)
-
-    x.strokeStyle = COLORS.light
-    x.lineWidth = 4
-    x.strokeRect(4, 4, CW - 8, CH - 8)
-    x.strokeStyle = COLORS.dark
-    x.lineWidth = 2
-    x.strokeRect(10, 10, CW - 20, CH - 20)
+    x.fillRect(CW/2-12, 496, 6, 6); x.fillRect(CW/2-3, 496, 6, 6); x.fillRect(CW/2+6, 496, 6, 6)
+    x.strokeStyle = COLORS.light; x.lineWidth = 4; x.strokeRect(4, 4, CW-8, CH-8)
+    x.strokeStyle = COLORS.dark; x.lineWidth = 2; x.strokeRect(10, 10, CW-20, CH-20)
   }, [screen])
 
   // Main game loop
@@ -313,14 +387,24 @@ export default function DriveGame() {
     if (!canvas) return
     const ctx = canvas.getContext("2d")
     if (!ctx) return
-    canvas.width = CW
-    canvas.height = CH
+    canvas.width = CW; canvas.height = CH
     ctx.imageSmoothingEnabled = false
 
     let animationId: number
 
     const update = () => {
       const gs = gameState.current
+      const ps = particlesRef.current
+
+      // Update particles
+      for (let i = ps.length - 1; i >= 0; i--) {
+        const p = ps[i]
+        p.x += p.vx; p.y += p.vy
+        if (p.type === "shard") p.vy += 0.15 // gravity on shards
+        if (p.type === "spark") p.vy += 0.05
+        p.life--
+        if (p.life <= 0) ps.splice(i, 1)
+      }
 
       if (gs.state === "idle") {
         const s = gs.shelves[gs.level]
@@ -331,15 +415,24 @@ export default function DriveGame() {
         if (gs.arrowX <= min) { gs.arrowX = min; gs.arrowDir = 1 }
       }
 
+      // Success arc toward gap
       if (gs.state === "arcing") {
+        const throwType = (gs as any).throwType
         gs.arcProgress += 0.035
         if (gs.arcProgress >= 1) {
           gs.arcProgress = 1
-          gs.state = "falling"
-          gs.driveX = gs.arcEndX
-          gs.driveY = gs.arcEndY
-          gs.driveVY = 2
-          gs.driveVX = 0
+          gs.driveX = gs.arcEndX; gs.driveY = gs.arcEndY
+          if (throwType === "knock") {
+            // Drive hit projector — knock it over
+            const s = gs.shelves[gs.level]
+            s.knocked = true; s.knockAngle = 0; s.knockTimer = 0
+            gs.state = "knocking"
+            gs.knockTimer = 0
+            spawnKnockParticles(gs.arcEndX, gs.arcEndY)
+          } else {
+            gs.state = "falling"
+            gs.driveVY = 2; gs.driveVX = 0
+          }
         } else {
           const t = gs.arcProgress
           gs.driveX = gs.arcStartX + (gs.arcEndX - gs.arcStartX) * t
@@ -348,15 +441,61 @@ export default function DriveGame() {
         }
       }
 
+      // Miss arc toward floor
+      if (gs.state === "miss_arc") {
+        gs.missArcProgress += 0.04
+        if (gs.missArcProgress >= 1) {
+          gs.missArcProgress = 1
+          gs.driveX = gs.missArcEndX; gs.driveY = gs.missArcEndY
+          gs.state = "shattering"
+          gs.shatterTimer = 0
+          spawnShatterParticles(gs.driveX, gs.driveY)
+        } else {
+          const t = gs.missArcProgress
+          gs.driveX = gs.missArcStartX + (gs.missArcEndX - gs.missArcStartX) * t
+          const arcHeight = -50 * Math.sin(t * Math.PI)
+          gs.driveY = gs.missArcStartY + (gs.missArcEndY - gs.missArcStartY) * t + arcHeight
+        }
+      }
+
+      // Drive shattering on floor
+      if (gs.state === "shattering") {
+        gs.shatterTimer++
+        if (gs.shatterTimer > 60) {
+          gs.state = "miss"
+          gs.flashTimer = 60
+        }
+      }
+
+      // Projector knocked over
+      if (gs.state === "knocking") {
+        gs.knockTimer++
+        const s = gs.shelves[gs.level]
+        // Animate projector falling — tilt it over
+        if (gs.knockTimer < 30) {
+          s.knockAngle = (gs.knockTimer / 30) * (Math.PI / 2)
+        } else {
+          s.knockAngle = Math.PI / 2
+        }
+        // Flicker sparks periodically
+        if (gs.knockTimer % 8 === 0 && gs.knockTimer < 60) {
+          const projX = s.side === "left" ? s.gapRight + 20 : s.gapLeft - 20
+          spawnKnockParticles(projX, s.y - 20)
+        }
+        if (gs.knockTimer > 80) {
+          gs.state = "miss"
+          gs.flashTimer = 60
+        }
+      }
+
       if (gs.state === "falling") {
         gs.driveVY += 0.4
-        gs.driveY += gs.driveVY
-        gs.driveX += gs.driveVX
+        gs.driveY += gs.driveVY; gs.driveX += gs.driveVX
         const s = gs.shelves[gs.level]
         if (gs.driveY >= s.y - DRIVE_H / 2) {
           gs.state = "projecting"
           gs.projectTimer = 0
-          s.projecting = true   // start beam animation
+          s.projecting = true
           gs.driveY = s.y - DRIVE_H / 2
         }
       }
@@ -364,35 +503,27 @@ export default function DriveGame() {
       if (gs.state === "projecting") {
         gs.projectTimer++
         if (gs.projectTimer > 60) {
-          // Mark this shelf as permanently delivered (keeps beam on)
           const s = gs.shelves[gs.level]
-          s.projecting = false
-          s.delivered = true
-
+          s.projecting = false; s.delivered = true
           gs.totalDeliveries++
           if (gs.level < 4) {
             gs.level++
             const ns = gs.shelves[gs.level]
             gs.driveX = ns.side === "left" ? 40 : CW - 40
             gs.driveY = ns.y - DRIVE_H
-            gs.state = "idle"
-            gs.characterThrowFrame = 0
+            gs.state = "idle"; gs.characterThrowFrame = 0
             initArrow(gs.level)
           } else {
             gs.extraMode = true
-            buildLayout(true)
-            initLevel(0, true)
+            buildLayout(true); initLevel(0, true)
           }
         }
       }
 
       if (gs.state === "miss") {
-        gs.driveX += gs.driveVX
-        gs.driveVX *= 0.88
         if (gs.flashTimer > 0) gs.flashTimer--
         if (gs.flashTimer === 0) {
-          gs.state = "gameover"
-          gs.flashTimer = -1
+          gs.state = "gameover"; gs.flashTimer = -1
         }
       }
     }
@@ -401,30 +532,38 @@ export default function DriveGame() {
       const gs = gameState.current
       for (let i = 0; i < 5; i++) {
         const s = gs.shelves[i]
-        const gl = s.gapLeft
-        const gr = s.gapRight
-
+        const gl = s.gapLeft, gr = s.gapRight
         ctx.fillStyle = COLORS.dark
         ctx.fillRect(0, s.y, gl, SHELF_H)
         ctx.fillRect(gr, s.y, CW - gr, SHELF_H)
-
         ctx.fillStyle = COLORS.mid
         ctx.fillRect(0, s.y, gl, 2)
         ctx.fillRect(gr, s.y, CW - gr, 2)
-
         drawProjector(s, gl, gr, i)
       }
     }
 
     const drawProjector = (s: Shelf, gl: number, gr: number, index: number) => {
       const gs = gameState.current
-      const projH = 45
-      const projW = 30
+      const projH = 45, projW = 30
       const projX = s.side === "left" ? gr + 5 : gl - 35
       const projY = s.y - projH
-
-      // Is this projector active (either animating or permanently on)?
       const isLit = s.projecting || s.delivered
+      const isKnocked = s.knocked
+      const knockAngle = s.knockAngle || 0
+
+      ctx.save()
+
+      if (isKnocked) {
+        // Rotate projector about its base
+        const pivotX = s.side === "left" ? projX : projX + projW
+        const pivotY = s.y
+        ctx.translate(pivotX, pivotY)
+        // Fall direction away from character
+        const fallDir = s.side === "left" ? 1 : -1
+        ctx.rotate(fallDir * knockAngle)
+        ctx.translate(-pivotX, -pivotY)
+      }
 
       // Projector body
       ctx.fillStyle = COLORS.mid
@@ -434,98 +573,126 @@ export default function DriveGame() {
         ctx.fillRect(projX + 4, projY + 6 + vi * 8, projW - 8, 2)
       }
 
-      // Tube/lens housing
-      const tubeW = 12
-      const tubeH = 18
+      const tubeW = 12, tubeH = 18
       const tubeX = s.side === "left" ? projX - tubeW : projX + projW
       const tubeY = projY + 10
 
       ctx.fillStyle = COLORS.dark
       ctx.fillRect(tubeX, tubeY, tubeW, tubeH)
-      // Lens colour — lit when delivered or projecting
-      ctx.fillStyle = isLit ? COLORS.lightest : COLORS.darkest
+
+      // Lens — flicker if knocked
+      let lensLit = isLit
+      if (isKnocked && gs.knockTimer !== undefined) {
+        lensLit = Math.floor(gs.knockTimer / 3) % 2 === 0
+      }
+      ctx.fillStyle = lensLit ? COLORS.lightest : COLORS.darkest
       ctx.fillRect(tubeX + 2, tubeY + 3, tubeW - 4, tubeH - 6)
-      ctx.strokeStyle = COLORS.mid
-      ctx.lineWidth = 1
+      ctx.strokeStyle = COLORS.mid; ctx.lineWidth = 1
       ctx.strokeRect(tubeX, tubeY, tubeW, tubeH)
+
+      // Beam — upward if knocked, sideways if delivered normally
+      if (isKnocked && gs.knockTimer !== undefined && gs.knockTimer > 5) {
+        // Beam pointing upward (projector fallen, lens now faces up)
+        const beamLen = Math.min((gs.knockTimer - 5) * 5, 150)
+        const bx = tubeX + tubeW / 2
+        const by = tubeY
+        ctx.save()
+        const grad = ctx.createLinearGradient(bx, by, bx, by - beamLen)
+        grad.addColorStop(0, "rgba(0,212,255,0.7)")
+        grad.addColorStop(0.4, "rgba(0,212,255,0.4)")
+        grad.addColorStop(1, "rgba(0,212,255,0)")
+        ctx.fillStyle = grad
+        ctx.beginPath()
+        ctx.moveTo(bx - 4, by); ctx.lineTo(bx + 4, by)
+        ctx.lineTo(bx + 20, by - beamLen); ctx.lineTo(bx - 20, by - beamLen)
+        ctx.closePath(); ctx.fill()
+        ctx.restore()
+      }
+
+      if (isLit) {
+        const maxBeamLen = 200
+        const beamLen = s.delivered ? maxBeamLen : Math.min(gs.projectTimer * 4, maxBeamLen)
+        const beamDir = s.side === "left" ? -1 : 1
+        const bx = tubeX + (s.side === "left" ? 0 : tubeW)
+        const by = tubeY + tubeH / 2
+        ctx.save()
+        const grad = ctx.createLinearGradient(bx, by, bx + beamDir * beamLen, by)
+        grad.addColorStop(0, "rgba(0,212,255,0.8)")
+        grad.addColorStop(0.3, "rgba(0,212,255,0.5)")
+        grad.addColorStop(1, "rgba(0,212,255,0)")
+        ctx.fillStyle = grad
+        ctx.beginPath()
+        ctx.moveTo(bx, by - 6); ctx.lineTo(bx, by + 6)
+        ctx.lineTo(bx + beamDir * beamLen, by + 30)
+        ctx.lineTo(bx + beamDir * beamLen, by - 30)
+        ctx.closePath(); ctx.fill()
+        ctx.restore()
+        ctx.fillStyle = "rgba(0,212,255,0.4)"
+        ctx.beginPath(); ctx.arc(bx, by, 10, 0, Math.PI * 2); ctx.fill()
+      }
+
+      ctx.restore() // end of projector transform
 
       // Drive slot
       const isCurrentLevel = gs.level === index
       if (s.delivered) {
-        // Slot flush / closed after delivery
         ctx.fillStyle = COLORS.lightest
         ctx.fillRect(gl, s.y - 2, gr - gl, 2)
-      } else {
+      } else if (!isKnocked) {
         const slotColor = isCurrentLevel ? COLORS.driveInput : COLORS.dark
         ctx.fillStyle = slotColor
         ctx.fillRect(gl, s.y - 8, gr - gl, 8)
         ctx.strokeStyle = isCurrentLevel ? COLORS.driveInput : COLORS.mid
         ctx.lineWidth = 2
         ctx.strokeRect(gl - 1, s.y - 9, gr - gl + 2, 10)
-
         if (index === 0 && gs.level === 0) {
           ctx.fillStyle = COLORS.driveInput
           ctx.font = '5px "Press Start 2P", monospace'
           ctx.textAlign = "center"
           ctx.fillText("DRIVE INPUT", (gl + gr) / 2, s.y - 12)
         }
-
         if (gs.state === "idle" && gs.level === index) {
-          ctx.fillStyle = "rgba(0, 255, 102, 0.25)"
+          ctx.fillStyle = "rgba(0,255,102,0.25)"
           ctx.fillRect(gl - 4, s.y - 12, gr - gl + 8, 16)
         }
       }
+    }
 
-      // Projector beam — animate while projecting, stay full-length once delivered
-      if (isLit) {
-        const maxBeamLength = 200
-        let beamLength: number
-        if (s.delivered) {
-          // Permanently at full length
-          beamLength = maxBeamLength
-        } else {
-          // Animating growth during projectTimer
-          beamLength = Math.min(gs.projectTimer * 4, maxBeamLength)
+    const drawParticles = () => {
+      const ps = particlesRef.current
+      for (const p of ps) {
+        const alpha = p.life / p.maxLife
+        ctx.globalAlpha = alpha
+        if (p.type === "spark") {
+          ctx.fillStyle = p.color
+          ctx.fillRect(p.x - 1, p.y - 1, 2, 2)
+          // Draw a little line in direction of travel
+          ctx.strokeStyle = p.color
+          ctx.lineWidth = 1
+          ctx.beginPath()
+          ctx.moveTo(p.x, p.y)
+          ctx.lineTo(p.x - p.vx * 3, p.y - p.vy * 3)
+          ctx.stroke()
+        } else if (p.type === "shard") {
+          ctx.fillStyle = p.color
+          ctx.save()
+          ctx.translate(p.x, p.y)
+          ctx.rotate((p.angle || 0) + p.life * 0.1)
+          ctx.fillRect(-(p.len || 3) / 2, -1, p.len || 3, 2)
+          ctx.restore()
         }
-
-        const beamDir = s.side === "left" ? -1 : 1
-        const beamStartX = tubeX + (s.side === "left" ? 0 : tubeW)
-        const beamStartY = tubeY + tubeH / 2
-
-        ctx.save()
-        const gradient = ctx.createLinearGradient(
-          beamStartX, beamStartY,
-          beamStartX + beamDir * beamLength, beamStartY
-        )
-        gradient.addColorStop(0, "rgba(0, 212, 255, 0.8)")
-        gradient.addColorStop(0.3, "rgba(0, 212, 255, 0.5)")
-        gradient.addColorStop(1, "rgba(0, 212, 255, 0)")
-        ctx.fillStyle = gradient
-        ctx.beginPath()
-        ctx.moveTo(beamStartX, beamStartY - 6)
-        ctx.lineTo(beamStartX, beamStartY + 6)
-        ctx.lineTo(beamStartX + beamDir * beamLength, beamStartY + 30)
-        ctx.lineTo(beamStartX + beamDir * beamLength, beamStartY - 30)
-        ctx.closePath()
-        ctx.fill()
-        ctx.restore()
-
-        // Lens glow
-        ctx.fillStyle = "rgba(0, 212, 255, 0.4)"
-        ctx.beginPath()
-        ctx.arc(beamStartX, beamStartY, 10, 0, Math.PI * 2)
-        ctx.fill()
+        ctx.globalAlpha = 1
       }
     }
 
     const drawDrive = () => {
       const gs = gameState.current
       if (gs.state === "gameover") return
-      // Hide the held drive once it's in flight or delivered
-      if (gs.state === "projecting" || gs.state === "falling") return
-      const x = Math.round(gs.driveX)
-      const y = Math.round(gs.driveY)
+      // Only show drive when idle (held by character) or in arcs
+      const showStates = ["idle", "arcing", "miss_arc", "falling"]
+      if (!showStates.includes(gs.state)) return
 
+      const x = Math.round(gs.driveX), y = Math.round(gs.driveY)
       ctx.fillStyle = "rgba(0,0,0,0.3)"
       ctx.fillRect(x - DRIVE_W / 2 + 2, y + DRIVE_H + 2, DRIVE_W, 4)
       ctx.fillStyle = COLORS.mid
@@ -534,24 +701,7 @@ export default function DriveGame() {
       ctx.fillRect(x - DRIVE_W / 2 + 2, y + 2, 4, 3)
       ctx.fillStyle = COLORS.light
       ctx.fillRect(x - DRIVE_W / 2 + 7, y + 2, 5, 6)
-      ctx.strokeStyle = COLORS.dark
-      ctx.lineWidth = 1
-      ctx.strokeRect(x - DRIVE_W / 2, y, DRIVE_W, DRIVE_H)
-    }
-
-    const drawArcDrive = () => {
-      const gs = gameState.current
-      if (gs.state !== "arcing") return
-      const x = Math.round(gs.driveX)
-      const y = Math.round(gs.driveY)
-      ctx.fillStyle = COLORS.mid
-      ctx.fillRect(x - DRIVE_W / 2, y, DRIVE_W, DRIVE_H)
-      ctx.fillStyle = COLORS.lightest
-      ctx.fillRect(x - DRIVE_W / 2 + 2, y + 2, 4, 3)
-      ctx.fillStyle = COLORS.light
-      ctx.fillRect(x - DRIVE_W / 2 + 7, y + 2, 5, 6)
-      ctx.strokeStyle = COLORS.dark
-      ctx.lineWidth = 1
+      ctx.strokeStyle = COLORS.dark; ctx.lineWidth = 1
       ctx.strokeRect(x - DRIVE_W / 2, y, DRIVE_W, DRIVE_H)
     }
 
@@ -561,36 +711,21 @@ export default function DriveGame() {
       const aw = 10, ah = 12
 
       if (gs.state === "idle") {
-        ctx.fillStyle = "rgba(0, 255, 102, 0.15)"
+        ctx.fillStyle = "rgba(0,255,102,0.15)"
         ctx.fillRect(s.gapLeft, s.y - 20, s.gapRight - s.gapLeft, 20)
-      }
-
-      if (gs.state === "idle") {
-        const ax = Math.round(gs.arrowX)
-        const ay = s.y - 14
+        const ax = Math.round(gs.arrowX), ay = s.y - 14
         ctx.fillStyle = COLORS.light
-        ctx.beginPath()
-        ctx.moveTo(ax, ay)
-        ctx.lineTo(ax - aw, ay - ah)
-        ctx.lineTo(ax + aw, ay - ah)
-        ctx.closePath()
-        ctx.fill()
-        ctx.strokeStyle = COLORS.lightest
-        ctx.lineWidth = 1
-        ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax-aw, ay-ah); ctx.lineTo(ax+aw, ay-ah)
+        ctx.closePath(); ctx.fill()
+        ctx.strokeStyle = COLORS.lightest; ctx.lineWidth = 1; ctx.stroke()
       }
 
-      if ((gs.state === "miss" || gs.state === "arcing") && gs.missArrowX >= 0) {
-        const ax = Math.round(gs.missArrowX)
-        const ay = s.y - 14
-        ctx.globalAlpha = 0.5
+      if (gs.missArrowX >= 0 && ["miss_arc","shattering","knocking","arcing"].includes(gs.state)) {
+        const ax = Math.round(gs.missArrowX), ay = s.y - 14
+        ctx.globalAlpha = 0.4
         ctx.fillStyle = COLORS.dark
-        ctx.beginPath()
-        ctx.moveTo(ax, ay)
-        ctx.lineTo(ax - aw, ay - ah)
-        ctx.lineTo(ax + aw, ay - ah)
-        ctx.closePath()
-        ctx.fill()
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax-aw, ay-ah); ctx.lineTo(ax+aw, ay-ah)
+        ctx.closePath(); ctx.fill()
         ctx.globalAlpha = 1
       }
     }
@@ -599,9 +734,9 @@ export default function DriveGame() {
       const gs = gameState.current
       if (gs.state === "gameover") return
       const s = gs.shelves[gs.level]
-      const throwing = gs.characterThrowFrame === 1 && gs.state === "arcing"
+      const throwing = gs.characterThrowFrame === 1 &&
+        ["arcing","miss_arc","shattering","knocking","falling","projecting"].includes(gs.state)
       const baseX = s.side === "left" ? 20 : CW - 20
-
       ctx.save()
       ctx.translate(baseX, s.y)
       if (s.side === "right") ctx.scale(-1, 1)
@@ -610,114 +745,62 @@ export default function DriveGame() {
     }
 
     const drawCory = (throwing: boolean) => {
-      const D = COLORS.darkest
-      const M = COLORS.mid
-      const C = COLORS.lightest
-      const W = "#e8f0f0"
-
+      const D = COLORS.darkest, M = COLORS.mid, C = COLORS.lightest, W = "#e8f0f0"
       ctx.fillStyle = D
-      ctx.fillRect(-8, -5, 7, 5); ctx.fillRect(1, -5, 8, 5)
+      ctx.fillRect(-8,-5,7,5); ctx.fillRect(1,-5,8,5)
       ctx.fillStyle = M
-      ctx.fillRect(-8, -5, 7, 1); ctx.fillRect(1, -5, 8, 1)
-
+      ctx.fillRect(-8,-5,7,1); ctx.fillRect(1,-5,8,1)
       ctx.fillStyle = "#1a3050"
-      ctx.fillRect(-7, -20, 6, 16); ctx.fillRect(1, -20, 6, 16)
-      ctx.fillRect(-7, -22, 14, 4)
-      ctx.fillStyle = "#2a4060"
-      ctx.fillRect(-5, -18, 2, 10)
-
-      ctx.fillStyle = D
-      ctx.fillRect(-8, -23, 16, 3)
-      ctx.fillStyle = M
-      ctx.fillRect(-1, -23, 3, 3)
-
-      ctx.fillStyle = "#c0c0c0"
-      ctx.fillRect(-8, -38, 16, 16)
-      ctx.fillStyle = "#e0e0e0"
-      ctx.fillRect(-2, -38, 4, 5)
-      ctx.fillStyle = "#a0a0a0"
-      ctx.fillRect(-1, -37, 2, 4)
-      ctx.fillStyle = "#808080"
-      ctx.fillRect(-7, -35, 5, 4)
-      ctx.fillStyle = "#c0c0c0"
-      ctx.fillRect(-6, -34, 3, 2)
-      ctx.fillStyle = "#e0e0e0"
-      ctx.fillRect(-4, -40, 8, 4)
-
+      ctx.fillRect(-7,-20,6,16); ctx.fillRect(1,-20,6,16); ctx.fillRect(-7,-22,14,4)
+      ctx.fillStyle = "#2a4060"; ctx.fillRect(-5,-18,2,10)
+      ctx.fillStyle = D; ctx.fillRect(-8,-23,16,3)
+      ctx.fillStyle = M; ctx.fillRect(-1,-23,3,3)
+      ctx.fillStyle = "#c0c0c0"; ctx.fillRect(-8,-38,16,16)
+      ctx.fillStyle = "#e0e0e0"; ctx.fillRect(-2,-38,4,5)
+      ctx.fillStyle = "#a0a0a0"; ctx.fillRect(-1,-37,2,4)
+      ctx.fillStyle = "#808080"; ctx.fillRect(-7,-35,5,4)
+      ctx.fillStyle = "#c0c0c0"; ctx.fillRect(-6,-34,3,2)
+      ctx.fillStyle = "#e0e0e0"; ctx.fillRect(-4,-40,8,4)
       if (!throwing) {
-        ctx.fillStyle = "#c0c0c0"
-        ctx.fillRect(-11, -36, 5, 18)
-        ctx.fillStyle = W
-        ctx.fillRect(-11, -26, 5, 8); ctx.fillRect(-11, -19, 5, 5)
-        ctx.fillStyle = "#a0a0a0"
-        ctx.fillRect(6, -36, 5, 14)
-        ctx.fillStyle = D
-        ctx.fillRect(6, -24, 5, 6)
-        ctx.fillStyle = W
-        ctx.fillRect(-9, -19, 3, 3)
-        ctx.fillStyle = D
-        ctx.fillRect(-12, -18, 8, 18)
-        ctx.fillStyle = M
-        ctx.fillRect(-11, -16, 6, 14)
+        ctx.fillStyle = "#c0c0c0"; ctx.fillRect(-11,-36,5,18)
+        ctx.fillStyle = W; ctx.fillRect(-11,-26,5,8); ctx.fillRect(-11,-19,5,5)
+        ctx.fillStyle = "#a0a0a0"; ctx.fillRect(6,-36,5,14)
+        ctx.fillStyle = D; ctx.fillRect(6,-24,5,6)
+        ctx.fillStyle = W; ctx.fillRect(-9,-19,3,3)
+        ctx.fillStyle = D; ctx.fillRect(-12,-18,8,18)
+        ctx.fillStyle = M; ctx.fillRect(-11,-16,6,14)
       } else {
-        ctx.fillStyle = "#c0c0c0"
-        ctx.fillRect(3, -40, 5, 14)
-        ctx.fillStyle = W
-        ctx.fillRect(6, -34, 5, 10); ctx.fillRect(8, -26, 4, 6)
-        ctx.fillStyle = "#c0c0c0"
-        ctx.fillRect(-2, -38, 5, 12)
-        ctx.fillStyle = W
-        ctx.fillRect(0, -30, 5, 8); ctx.fillRect(2, -24, 4, 5)
-        ctx.fillStyle = D
-        ctx.fillRect(-12, -18, 8, 18)
-        ctx.fillStyle = M
-        ctx.fillRect(-11, -16, 6, 14)
+        ctx.fillStyle = "#c0c0c0"; ctx.fillRect(3,-40,5,14)
+        ctx.fillStyle = W; ctx.fillRect(6,-34,5,10); ctx.fillRect(8,-26,4,6)
+        ctx.fillStyle = "#c0c0c0"; ctx.fillRect(-2,-38,5,12)
+        ctx.fillStyle = W; ctx.fillRect(0,-30,5,8); ctx.fillRect(2,-24,4,5)
+        ctx.fillStyle = D; ctx.fillRect(-12,-18,8,18)
+        ctx.fillStyle = M; ctx.fillRect(-11,-16,6,14)
       }
-
+      ctx.fillStyle = W; ctx.fillRect(-3,-44,6,5)
       ctx.fillStyle = W
-      ctx.fillRect(-3, -44, 6, 5)
-
-      ctx.fillStyle = W
-      ctx.fillRect(-9, -58, 18, 16)
-      ctx.fillRect(-11, -55, 3, 8); ctx.fillRect(8, -55, 3, 8)
-      ctx.fillStyle = D
-      ctx.fillRect(-10, -54, 1, 5); ctx.fillRect(9, -54, 1, 5)
-
+      ctx.fillRect(-9,-58,18,16); ctx.fillRect(-11,-55,3,8); ctx.fillRect(8,-55,3,8)
+      ctx.fillStyle = D; ctx.fillRect(-10,-54,1,5); ctx.fillRect(9,-54,1,5)
       ctx.fillStyle = "#3a2a1a"
-      ctx.fillRect(-9, -58, 18, 5); ctx.fillRect(-9, -58, 3, 12); ctx.fillRect(6, -58, 3, 8)
-      ctx.fillStyle = "#4a3a2a"
-      ctx.fillRect(-5, -57, 6, 2)
-
+      ctx.fillRect(-9,-58,18,5); ctx.fillRect(-9,-58,3,12); ctx.fillRect(6,-58,3,8)
+      ctx.fillStyle = "#4a3a2a"; ctx.fillRect(-5,-57,6,2)
       ctx.fillStyle = "#4a6a4a"
-      ctx.fillRect(-9, -60, 18, 4); ctx.fillRect(-9, -60, 20, 2)
-      ctx.fillRect(-7, -65, 14, 7); ctx.fillRect(-5, -68, 10, 5)
-      ctx.fillRect(7, -60, 6, 3)
-      ctx.fillStyle = "#5a7a5a"
-      ctx.fillRect(-6, -65, 5, 2)
-
+      ctx.fillRect(-9,-60,18,4); ctx.fillRect(-9,-60,20,2)
+      ctx.fillRect(-7,-65,14,7); ctx.fillRect(-5,-68,10,5); ctx.fillRect(7,-60,6,3)
+      ctx.fillStyle = "#5a7a5a"; ctx.fillRect(-6,-65,5,2)
       ctx.fillStyle = M
-      ctx.fillRect(-7, -52, 6, 4); ctx.fillRect(1, -52, 6, 4)
-      ctx.fillRect(-1, -51, 2, 1)
+      ctx.fillRect(-7,-52,6,4); ctx.fillRect(1,-52,6,4); ctx.fillRect(-1,-51,2,1)
       ctx.fillStyle = C
-      ctx.fillRect(-6, -51, 4, 2); ctx.fillRect(2, -51, 4, 2)
-
-      ctx.fillStyle = D
-      ctx.fillRect(-5, -50, 2, 1); ctx.fillRect(3, -50, 2, 1)
-
-      ctx.fillStyle = "#d0c0c0"
-      ctx.fillRect(-1, -48, 2, 3)
-
-      ctx.fillStyle = D
-      ctx.fillRect(-3, -44, 6, 1)
+      ctx.fillRect(-6,-51,4,2); ctx.fillRect(2,-51,4,2)
+      ctx.fillStyle = D; ctx.fillRect(-5,-50,2,1); ctx.fillRect(3,-50,2,1)
+      ctx.fillStyle = "#d0c0c0"; ctx.fillRect(-1,-48,2,3)
+      ctx.fillStyle = D; ctx.fillRect(-3,-44,6,1)
     }
 
     const drawCityBar = () => {
       const cityY = CH - BTN_H
-      ctx.fillStyle = COLORS.dark
-      ctx.fillRect(0, cityY, CW, BTN_H)
-
-      const buildings = buildingsRef.current
-      for (const b of buildings) {
+      ctx.fillStyle = COLORS.dark; ctx.fillRect(0, cityY, CW, BTN_H)
+      for (const b of buildingsRef.current) {
         ctx.fillStyle = COLORS.darkest
         ctx.fillRect(b.x, cityY - b.h + 15, b.w, b.h)
         for (const w of b.windows) {
@@ -725,26 +808,16 @@ export default function DriveGame() {
           ctx.fillRect(w.wx, w.wy, 3, 3)
         }
       }
-
-      ctx.fillStyle = COLORS.light
-      ctx.fillRect(0, cityY, CW, 2)
+      ctx.fillStyle = COLORS.light; ctx.fillRect(0, cityY, CW, 2)
     }
 
     const drawHUD = () => {
       const gs = gameState.current
-      ctx.fillStyle = COLORS.darkest
-      ctx.fillRect(0, 0, CW, HUD_H)
-
-      ctx.fillStyle = COLORS.light
-      ctx.font = '6px "Press Start 2P", monospace'
-      ctx.textAlign = "left"
-      ctx.fillText("CORYS DRIVE", 6, 10)
-      ctx.fillText("DELIVERY", 6, 20)
-
-      ctx.fillStyle = COLORS.lightest
-      ctx.font = '9px "Press Start 2P", monospace'
-      ctx.textAlign = "right"
-      ctx.fillText(gs.totalDeliveries + " SITES", CW - 6, 19)
+      ctx.fillStyle = COLORS.darkest; ctx.fillRect(0, 0, CW, HUD_H)
+      ctx.fillStyle = COLORS.light; ctx.font = '6px "Press Start 2P", monospace'
+      ctx.textAlign = "left"; ctx.fillText("CORYS DRIVE", 6, 10); ctx.fillText("DELIVERY", 6, 20)
+      ctx.fillStyle = COLORS.lightest; ctx.font = '9px "Press Start 2P", monospace'
+      ctx.textAlign = "right"; ctx.fillText(gameState.current.totalDeliveries + " SITES", CW - 6, 19)
     }
 
     const drawOverlays = () => {
@@ -752,84 +825,56 @@ export default function DriveGame() {
 
       if (gs.state === "miss" && gs.flashTimer > 0) {
         const flash = Math.floor(gs.flashTimer / 6) % 2 === 0
-        if (flash) {
-          ctx.fillStyle = "rgba(255, 45, 149, 0.25)"
-          ctx.fillRect(0, HUD_H, CW, GAME_H)
-        }
-        ctx.font = '14px "Press Start 2P", monospace'
-        ctx.textAlign = "center"
+        if (flash) { ctx.fillStyle = "rgba(255,45,149,0.25)"; ctx.fillRect(0, HUD_H, CW, GAME_H) }
+        ctx.font = '14px "Press Start 2P", monospace'; ctx.textAlign = "center"
         ctx.fillStyle = flash ? COLORS.lightest : COLORS.light
         ctx.fillText("MISS!", CW / 2, CH / 2 - 30)
       }
 
       if (gs.state === "gameover") {
-        ctx.fillStyle = "rgba(10, 10, 26, 0.92)"
-        ctx.fillRect(0, 0, CW, CH)
+        ctx.fillStyle = "rgba(10,10,26,0.92)"; ctx.fillRect(0, 0, CW, CH)
         ctx.textAlign = "center"
-
-        const boxX = CW / 2 - 140, boxY = 120, boxW = 280, boxH = 70
-        ctx.fillStyle = COLORS.dark
-        ctx.fillRect(boxX, boxY, boxW, boxH)
-        ctx.strokeStyle = COLORS.light
-        ctx.lineWidth = 3
-        ctx.strokeRect(boxX, boxY, boxW, boxH)
-        ctx.fillStyle = COLORS.lightest
-        ctx.font = '9px "Press Start 2P", monospace'
-        ctx.fillText("DELIVERIES COMPLETED", CW / 2, boxY + 24)
-        ctx.fillStyle = COLORS.light
-        ctx.font = '26px "Press Start 2P", monospace'
-        ctx.fillText(String(gs.totalDeliveries), CW / 2, boxY + 58)
-
-        ctx.fillStyle = COLORS.lightest
-        ctx.font = '18px "Press Start 2P", monospace'
-        ctx.fillText("MISS!", CW / 2, CH / 2 - 30)
-        ctx.font = '7px "Press Start 2P", monospace'
-        ctx.fillStyle = COLORS.mid
-        ctx.fillText("YOU FAILED TO", CW / 2, CH / 2)
-        ctx.fillText("DELIVER THE DRIVE!", CW / 2, CH / 2 + 14)
-
-        const btnY = CH / 2 + 40
-        const btnW = 170, btnH = 32
-        const btnX = CW / 2 - btnW / 2
+        const bx = CW/2-140, by = 120, bw = 280, bh = 70
+        ctx.fillStyle = COLORS.dark; ctx.fillRect(bx, by, bw, bh)
+        ctx.strokeStyle = COLORS.light; ctx.lineWidth = 3; ctx.strokeRect(bx, by, bw, bh)
+        ctx.fillStyle = COLORS.lightest; ctx.font = '9px "Press Start 2P", monospace'
+        ctx.fillText("DELIVERIES COMPLETED", CW/2, by + 24)
+        ctx.fillStyle = COLORS.light; ctx.font = '26px "Press Start 2P", monospace'
+        ctx.fillText(String(gs.totalDeliveries), CW/2, by + 58)
+        ctx.fillStyle = COLORS.lightest; ctx.font = '18px "Press Start 2P", monospace'
+        ctx.fillText("MISS!", CW/2, CH/2 - 30)
+        ctx.font = '7px "Press Start 2P", monospace'; ctx.fillStyle = COLORS.mid
+        ctx.fillText("YOU FAILED TO", CW/2, CH/2); ctx.fillText("DELIVER THE DRIVE!", CW/2, CH/2 + 14)
+        const btnY = CH/2 + 40, btnW = 170, btnH = 32, btnX = CW/2 - btnW/2
         const blink = Math.floor(Date.now() / 500) % 2
-        ctx.fillStyle = blink ? COLORS.dark : COLORS.darkest
-        ctx.fillRect(btnX, btnY, btnW, btnH)
-        ctx.strokeStyle = blink ? COLORS.light : COLORS.mid
-        ctx.lineWidth = 2
+        ctx.fillStyle = blink ? COLORS.dark : COLORS.darkest; ctx.fillRect(btnX, btnY, btnW, btnH)
+        ctx.strokeStyle = blink ? COLORS.light : COLORS.mid; ctx.lineWidth = 2
         ctx.strokeRect(btnX, btnY, btnW, btnH)
         ctx.fillStyle = blink ? COLORS.lightest : COLORS.mid
         ctx.font = '8px "Press Start 2P", monospace'
-        ctx.fillText("TRY AGAIN", CW / 2, btnY + btnH / 2 + 4)
+        ctx.fillText("TRY AGAIN", CW/2, btnY + btnH/2 + 4)
       }
     }
 
     const draw = () => {
-      ctx.fillStyle = COLORS.darkest
-      ctx.fillRect(0, 0, CW, CH)
+      ctx.fillStyle = COLORS.darkest; ctx.fillRect(0, 0, CW, CH)
       drawCityBar()
       drawShelves()
       drawDrive()
-      drawArcDrive()
       drawArrow()
+      drawParticles()
       drawCharacter()
       drawHUD()
       drawOverlays()
     }
 
-    const loop = () => {
-      update()
-      draw()
-      animationId = requestAnimationFrame(loop)
-    }
-
+    const loop = () => { update(); draw(); animationId = requestAnimationFrame(loop) }
     loop()
     return () => cancelAnimationFrame(animationId)
-  }, [screen, buildLayout, initLevel, initArrow])
+  }, [screen, buildLayout, initLevel, initArrow, spawnShatterParticles, spawnKnockParticles])
 
-  // Event handlers
   useEffect(() => {
     if (screen !== "game") return
-
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === "Space") {
         e.preventDefault()
@@ -837,19 +882,16 @@ export default function DriveGame() {
         else onThrow()
       }
     }
-
     const handleCanvasClick = (e: MouseEvent | TouchEvent) => {
       e.preventDefault()
       const gs = gameState.current
       if (gs.state === "gameover") doRetry()
       else if (gs.state === "idle") onThrow()
     }
-
     document.addEventListener("keydown", handleKeyDown)
     const canvas = canvasRef.current
     canvas?.addEventListener("click", handleCanvasClick)
     canvas?.addEventListener("touchend", handleCanvasClick)
-
     return () => {
       document.removeEventListener("keydown", handleKeyDown)
       canvas?.removeEventListener("click", handleCanvasClick)
@@ -862,47 +904,37 @@ export default function DriveGame() {
       ref={shellRef}
       className="fixed top-0 left-0 overflow-hidden"
       style={{
-        width: CW,
-        height: CH,
+        width: CW, height: CH,
         background: COLORS.darkest,
         border: `3px solid ${COLORS.dark}`,
-        boxShadow: `0 0 0 3px ${COLORS.darkest}, 0 0 0 6px ${COLORS.light}, 0 0 40px rgba(255, 45, 149, 0.25)`,
+        boxShadow: `0 0 0 3px ${COLORS.darkest}, 0 0 0 6px ${COLORS.light}, 0 0 40px rgba(255,45,149,0.25)`,
         transformOrigin: "top left",
       }}
     >
-      {/* Home Screen — image cropped/zoomed to focus on Cory */}
+      {/* Home Screen */}
       {screen === "home" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-end" style={{ background: COLORS.darkest }}>
-          <div
-            className="absolute inset-0 overflow-hidden"
-            style={{ background: COLORS.darkest }}
-          >
-            <img
-              src="/CoryDrive.png"
-              alt="Corys Drive Delivery Challenge"
-              style={{
-                position: "absolute",
-                // Zoom in ~1.4x and shift up slightly to crop bottom/sides
-                // and focus on Cory's face/upper body
-                width: "140%",
-                height: "140%",
-                objectFit: "cover",
-                objectPosition: "center 30%",
-                left: "-20%",
-                top: "-5%",
-                imageRendering: "auto",
-              }}
-            />
-          </div>
+        <div className="absolute inset-0" style={{ background: COLORS.darkest }}>
+          <img
+            src="/cory2.png"
+            alt="Corys Drive Delivery Challenge"
+            style={{
+              position: "absolute", inset: 0,
+              width: "100%", height: "100%",
+              objectFit: "cover",
+              objectPosition: "center top",
+              imageRendering: "auto",
+            }}
+          />
           <button
             onClick={() => setScreen("instructions")}
-            className="relative z-10 mb-6 px-9 py-3 text-base tracking-widest cursor-pointer whitespace-nowrap animate-pulse"
+            className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 px-9 py-3 text-base tracking-widest cursor-pointer whitespace-nowrap"
             style={{
-              background: COLORS.darkest,
+              background: "rgba(10,10,26,0.85)",
               color: COLORS.light,
               border: `3px solid ${COLORS.light}`,
               fontFamily: '"Press Start 2P", monospace',
               boxShadow: `3px 3px 0 ${COLORS.dark}, 0 0 16px rgba(255,45,149,0.5)`,
+              animation: "pulse 1s step-end infinite",
             }}
           >
             ▶ PLAY
@@ -912,13 +944,10 @@ export default function DriveGame() {
 
       {/* Instruction Screen */}
       {screen === "instructions" && (
-        <div
-          className="absolute inset-0 cursor-pointer"
+        <div className="absolute inset-0 cursor-pointer"
           onClick={() => startGame()}
           onKeyDown={(e) => { if (e.code === "Space" || e.code === "Enter") startGame() }}
-          tabIndex={0}
-          role="button"
-          aria-label="Start game"
+          tabIndex={0} role="button" aria-label="Start game"
         >
           <canvas ref={instrCanvasRef} width={CW} height={CH} className="w-full h-full block" />
         </div>
@@ -929,17 +958,13 @@ export default function DriveGame() {
         <div className="absolute inset-0">
           <canvas ref={canvasRef} className="w-full h-full block" style={{ imageRendering: "pixelated" }} />
           <button
-            onClick={() => {
-              if (gameState.current.state === "gameover") doRetry()
-              else onThrow()
-            }}
+            onClick={() => { if (gameState.current.state === "gameover") doRetry(); else onThrow() }}
             className="absolute bottom-3 left-1/2 -translate-x-1/2 w-60 py-2.5 text-sm tracking-wide cursor-pointer whitespace-nowrap z-10"
             style={{
-              background: COLORS.darkest,
-              color: COLORS.light,
+              background: COLORS.darkest, color: COLORS.light,
               border: `3px solid ${COLORS.light}`,
               fontFamily: '"Press Start 2P", monospace',
-              boxShadow: `3px 3px 0 ${COLORS.dark}, 0 0 10px rgba(255, 45, 149, 0.5)`,
+              boxShadow: `3px 3px 0 ${COLORS.dark}, 0 0 10px rgba(255,45,149,0.5)`,
             }}
           >
             THROW!
@@ -948,13 +973,9 @@ export default function DriveGame() {
       )}
 
       {/* Scanlines */}
-      <div
-        className="absolute inset-0 pointer-events-none z-50"
-        style={{
-          background:
-            "repeating-linear-gradient(to bottom, transparent 0px, transparent 3px, rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px)",
-        }}
-      />
+      <div className="absolute inset-0 pointer-events-none z-50" style={{
+        background: "repeating-linear-gradient(to bottom, transparent 0px, transparent 3px, rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px)",
+      }} />
     </div>
   )
 }
