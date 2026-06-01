@@ -194,6 +194,7 @@ export default function DriveGame() {
     gs.projectTimer = 0
     gs.shatterTimer = 0
     gs.knockTimer = 0
+    ;(gs as any).throwType = null
     particlesRef.current = []
     if (!keepTotal) {
       gs.totalDeliveries = 0
@@ -282,6 +283,7 @@ export default function DriveGame() {
 
     gs.characterThrowFrame = 1
     gs.missArrowX = gs.arrowX
+    ;(gs as any).throwType = null
 
     if (inGap) {
       // Perfect throw — arc to projector gap
@@ -417,12 +419,11 @@ export default function DriveGame() {
 
       // Success arc toward gap
       if (gs.state === "arcing") {
-        const throwType = (gs as any).throwType
         gs.arcProgress += 0.035
         if (gs.arcProgress >= 1) {
           gs.arcProgress = 1
           gs.driveX = gs.arcEndX; gs.driveY = gs.arcEndY
-          if (throwType === "knock") {
+          if ((gs as any).throwType === "knock") {
             // Drive hit projector — knock it over
             const s = gs.shelves[gs.level]
             s.knocked = true; s.knockAngle = 0; s.knockTimer = 0
