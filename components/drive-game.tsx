@@ -84,6 +84,48 @@ export default function DriveGame() {
   const [screen, setScreen] = useState<"home" | "instructions" | "game">("home")
   const buildingsRef = useRef<Building[]>(generateBuildings())
   const particlesRef = useRef<Particle[]>([])
+  const leaderboardRef = useRef<{name: string, score: number}[]>([])
+  const [leaderboardLoaded, setLeaderboardLoaded] = useState(false)
+
+  const JSONBIN_ID = "6a1dac23ddf5aa59f780b928"
+  const JSONBIN_KEY = "$2a$10$R1A.gZKB76C.5eQ7Mq9h6O68el4D/RL3Es4vGgyX3Ya4ePgEHslv2"
+  const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${JSONBIN_ID}`
+
+  const fetchLeaderboard = useCallback(async () => {
+    try {
+      const res = await fetch(JSONBIN_URL + "/latest", {
+        headers: { "X-Access-Key": JSONBIN_KEY }
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      leaderboardRef.current = Array.isArray(data.record?.scores) ? data.record.scores : []
+      setLeaderboardLoaded(true)
+    } catch(e) {}
+  }, [JSONBIN_URL, JSONBIN_KEY])
+
+  const saveScore = useCallback(async (name: string, score: number) => {
+    try {
+      // Fetch latest first
+      const res = await fetch(JSONBIN_URL + "/latest", {
+        headers: { "X-Access-Key": JSONBIN_KEY }
+      })
+      let scores: {name: string, score: number}[] = []
+      if (res.ok) {
+        const data = await res.json()
+        scores = Array.isArray(data.record?.scores) ? data.record.scores : []
+      }
+      scores.push({ name: name.toUpperCase().trim().substring(0,8) || "ANON", score })
+      scores.sort((a, b) => b.score - a.score)
+      scores = scores.slice(0, 10)
+      await fetch(JSONBIN_URL, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "X-Access-Key": JSONBIN_KEY },
+        body: JSON.stringify({ scores })
+      })
+      leaderboardRef.current = scores
+      setLeaderboardLoaded(true)
+    } catch(e) {}
+  }, [JSONBIN_URL, JSONBIN_KEY])
 
   const gameState = useRef({
     level: 0,
@@ -96,6 +138,7 @@ export default function DriveGame() {
       | "shattering"     // drive hit floor (miss)
       | "knocking"       // drive hit projector wrong (near miss)
       | "miss"           // flash timer running
+      | "crying"     // character on knees after miss
       | "gameover",
     arrowX: 0,
     arrowDir: 1,
@@ -124,7 +167,11 @@ export default function DriveGame() {
     characterThrowFrame: 0,
     shatterTimer: 0,
     knockTimer: 0,
+    cryTimer: 0,
   })
+
+  const nameEntryRef = useRef({ active: false, name: "", saved: false })
+  const [nameEntryActive, setNameEntryActive] = useState(false)
 
   const scaleShell = useCallback(() => {
     const shell = shellRef.current
@@ -194,6 +241,7 @@ export default function DriveGame() {
     gs.projectTimer = 0
     gs.shatterTimer = 0
     gs.knockTimer = 0
+    gs.cryTimer = 0
     ;(gs as any).throwType = null
     particlesRef.current = []
     if (!keepTotal) {
@@ -270,7 +318,8 @@ export default function DriveGame() {
     setScreen("game")
     buildLayout(false)
     initLevel(0, false)
-  }, [buildLayout, initLevel])
+    fetchLeaderboard()
+  }, [buildLayout, initLevel, fetchLeaderboard])
 
   const onThrow = useCallback(() => {
     const gs = gameState.current
@@ -278,8 +327,10 @@ export default function DriveGame() {
     const s = gs.shelves[gs.level]
     const inGap = gs.arrowX >= s.gapLeft && gs.arrowX <= s.gapRight
 
-    // Check if near projector (within 30px either side of gap)
-    const nearProjector = gs.arrowX >= s.gapLeft - 30 && gs.arrowX <= s.gapRight + 30 && !inGap
+    // Knock only triggers if arrow is strictly over the projector body itself (30px box beside the gap)
+    const projBodyLeft = s.side === "left" ? s.gapRight + 5 : s.gapLeft - 35
+    const projBodyRight = projBodyLeft + 30
+    const nearProjector = gs.arrowX >= projBodyLeft && gs.arrowX <= projBodyRight && !inGap
 
     gs.characterThrowFrame = 1
     gs.missArrowX = gs.arrowX
@@ -327,7 +378,10 @@ export default function DriveGame() {
     initLevel(0, false)
     buildingsRef.current = generateBuildings()
     particlesRef.current = []
-  }, [buildLayout, initLevel])
+    nameEntryRef.current = { active: false, name: "", saved: false }
+    setNameEntryActive(false)
+    fetchLeaderboard()
+  }, [buildLayout, initLevel, fetchLeaderboard])
 
   // Instruction screen
   useEffect(() => {
@@ -459,10 +513,19 @@ export default function DriveGame() {
         }
       }
 
-      // Drive shattering on floor
+      // Drive shattering on floor → character cries
       if (gs.state === "shattering") {
         gs.shatterTimer++
-        if (gs.shatterTimer > 60) {
+        if (gs.shatterTimer > 40) {
+          gs.state = "crying"
+          gs.cryTimer = 0
+        }
+      }
+
+      // Character crying on knees
+      if (gs.state === "crying") {
+        gs.cryTimer++
+        if (gs.cryTimer > 90) {
           gs.state = "miss"
           gs.flashTimer = 60
         }
@@ -484,8 +547,8 @@ export default function DriveGame() {
           spawnKnockParticles(projX, s.y - 20)
         }
         if (gs.knockTimer > 80) {
-          gs.state = "miss"
-          gs.flashTimer = 60
+          gs.state = "crying"
+          gs.cryTimer = 0
         }
       }
 
@@ -524,7 +587,16 @@ export default function DriveGame() {
       if (gs.state === "miss") {
         if (gs.flashTimer > 0) gs.flashTimer--
         if (gs.flashTimer === 0) {
-          gs.state = "gameover"; gs.flashTimer = -1
+          gs.state = "gameover"
+          gs.flashTimer = -1
+          // Trigger name entry if score qualifies for top 10
+          if (gs.totalDeliveries > 0) {
+            const lb = leaderboardRef.current
+            if (lb.length < 10 || gs.totalDeliveries > lb[lb.length - 1]?.score) {
+              nameEntryRef.current = { active: true, name: "", saved: false }
+              setNameEntryActive(true)
+            }
+          }
         }
       }
     }
@@ -646,7 +718,7 @@ export default function DriveGame() {
         ctx.strokeStyle = isCurrentLevel ? COLORS.driveInput : COLORS.mid
         ctx.lineWidth = 2
         ctx.strokeRect(gl - 1, s.y - 9, gr - gl + 2, 10)
-        if (index === 0 && gs.level === 0) {
+        if (index === 0 && gs.level === 0 && gs.totalDeliveries === 0 && !gs.extraMode) {
           ctx.fillStyle = COLORS.driveInput
           ctx.font = '5px "Press Start 2P", monospace'
           ctx.textAlign = "center"
@@ -688,11 +760,9 @@ export default function DriveGame() {
 
     const drawDrive = () => {
       const gs = gameState.current
-      if (gs.state === "gameover") return
-      // Only show drive when idle (held by character) or in arcs
-      const showStates = ["idle", "arcing", "miss_arc", "falling"]
+      // Only show flying drive during arc states — idle drive is drawn IN the character's hand
+      const showStates = ["arcing", "miss_arc", "falling"]
       if (!showStates.includes(gs.state)) return
-
       const x = Math.round(gs.driveX), y = Math.round(gs.driveY)
       ctx.fillStyle = "rgba(0,0,0,0.3)"
       ctx.fillRect(x - DRIVE_W / 2 + 2, y + DRIVE_H + 2, DRIVE_W, 4)
@@ -721,7 +791,7 @@ export default function DriveGame() {
         ctx.strokeStyle = COLORS.lightest; ctx.lineWidth = 1; ctx.stroke()
       }
 
-      if (gs.missArrowX >= 0 && ["miss_arc","shattering","knocking","arcing"].includes(gs.state)) {
+      if (gs.missArrowX >= 0 && ["miss_arc","shattering","knocking","arcing","crying","miss","gameover"].includes(gs.state)) {
         const ax = Math.round(gs.missArrowX), ay = s.y - 14
         ctx.globalAlpha = 0.4
         ctx.fillStyle = COLORS.dark
@@ -737,15 +807,21 @@ export default function DriveGame() {
       const s = gs.shelves[gs.level]
       const throwing = gs.characterThrowFrame === 1 &&
         ["arcing","miss_arc","shattering","knocking","falling","projecting"].includes(gs.state)
+      const crying = ["crying","miss"].includes(gs.state)
+      const holdingDrive = gs.state === "idle"
       const baseX = s.side === "left" ? 20 : CW - 20
       ctx.save()
       ctx.translate(baseX, s.y)
       if (s.side === "right") ctx.scale(-1, 1)
-      drawCory(throwing)
+      if (crying) {
+        drawCoryCrying()
+      } else {
+        drawCory(throwing, holdingDrive)
+      }
       ctx.restore()
     }
 
-    const drawCory = (throwing: boolean) => {
+    const drawCory = (throwing: boolean, holdingDrive: boolean = false) => {
       const D = COLORS.darkest, M = COLORS.mid, C = COLORS.lightest, W = "#e8f0f0"
       ctx.fillStyle = D
       ctx.fillRect(-8,-5,7,5); ctx.fillRect(1,-5,8,5)
@@ -763,13 +839,29 @@ export default function DriveGame() {
       ctx.fillStyle = "#c0c0c0"; ctx.fillRect(-6,-34,3,2)
       ctx.fillStyle = "#e0e0e0"; ctx.fillRect(-4,-40,8,4)
       if (!throwing) {
-        ctx.fillStyle = "#c0c0c0"; ctx.fillRect(-11,-36,5,18)
-        ctx.fillStyle = W; ctx.fillRect(-11,-26,5,8); ctx.fillRect(-11,-19,5,5)
+        // Right arm down
         ctx.fillStyle = "#a0a0a0"; ctx.fillRect(6,-36,5,14)
         ctx.fillStyle = D; ctx.fillRect(6,-24,5,6)
-        ctx.fillStyle = W; ctx.fillRect(-9,-19,3,3)
-        ctx.fillStyle = D; ctx.fillRect(-12,-18,8,18)
-        ctx.fillStyle = M; ctx.fillRect(-11,-16,6,14)
+        if (holdingDrive) {
+          // Left arm raised, holding drive at chest height
+          ctx.fillStyle = "#c0c0c0"; ctx.fillRect(-11,-36,5,10)
+          ctx.fillStyle = W; ctx.fillRect(-11,-28,5,6)
+          // Hand holding drive up near chest
+          ctx.fillStyle = W; ctx.fillRect(-13,-30,5,5) // hand
+          // Drive in hand
+          ctx.fillStyle = COLORS.mid; ctx.fillRect(-15,-32,10,7)
+          ctx.fillStyle = COLORS.lightest; ctx.fillRect(-14,-31,3,2)
+          ctx.fillStyle = COLORS.light; ctx.fillRect(-9,-31,3,4)
+          ctx.strokeStyle = COLORS.darkest; ctx.lineWidth = 0.5
+          ctx.strokeRect(-15,-32,10,7)
+        } else {
+          // Left arm at side (after throw, no drive)
+          ctx.fillStyle = "#c0c0c0"; ctx.fillRect(-11,-36,5,18)
+          ctx.fillStyle = W; ctx.fillRect(-11,-26,5,8); ctx.fillRect(-11,-19,5,5)
+          ctx.fillStyle = W; ctx.fillRect(-9,-19,3,3)
+          ctx.fillStyle = D; ctx.fillRect(-12,-18,8,18)
+          ctx.fillStyle = M; ctx.fillRect(-11,-16,6,14)
+        }
       } else {
         ctx.fillStyle = "#c0c0c0"; ctx.fillRect(3,-40,5,14)
         ctx.fillStyle = W; ctx.fillRect(6,-34,5,10); ctx.fillRect(8,-26,4,6)
@@ -796,6 +888,58 @@ export default function DriveGame() {
       ctx.fillStyle = D; ctx.fillRect(-5,-50,2,1); ctx.fillRect(3,-50,2,1)
       ctx.fillStyle = "#d0c0c0"; ctx.fillRect(-1,-48,2,3)
       ctx.fillStyle = D; ctx.fillRect(-3,-44,6,1)
+    }
+
+    const drawCoryCrying = () => {
+      // Character on knees, head bowed, arms raised crying
+      const D = COLORS.darkest, M = COLORS.mid, C = COLORS.lightest, W = "#e8f0f0"
+      // Knees on floor — body is lower/compressed
+      // Feet flat on ground
+      ctx.fillStyle = D
+      ctx.fillRect(-10, -8, 9, 6); ctx.fillRect(1, -8, 9, 6)
+      ctx.fillStyle = M; ctx.fillRect(-10, -8, 9, 2); ctx.fillRect(1, -8, 9, 2)
+      // Thighs going forward (kneeling)
+      ctx.fillStyle = "#1a3050"
+      ctx.fillRect(-8, -16, 7, 10); ctx.fillRect(1, -16, 7, 10)
+      // Torso hunched forward
+      ctx.fillStyle = "#c0c0c0"; ctx.fillRect(-7, -30, 14, 16)
+      ctx.fillStyle = "#e0e0e0"; ctx.fillRect(-2, -30, 4, 5)
+      // Arms raised up beside head (crying gesture)
+      ctx.fillStyle = "#c0c0c0"
+      ctx.fillRect(-13, -42, 5, 14) // left arm up
+      ctx.fillRect(8, -42, 5, 14)  // right arm up
+      ctx.fillStyle = W
+      ctx.fillRect(-14, -44, 5, 5); ctx.fillRect(9, -44, 5, 5) // hands up
+      // Neck
+      ctx.fillStyle = W; ctx.fillRect(-3, -34, 6, 5)
+      // Head bowed forward
+      ctx.fillStyle = W
+      ctx.fillRect(-9, -48, 18, 14)
+      // Cap
+      ctx.fillStyle = "#4a6a4a"
+      ctx.fillRect(-9, -50, 18, 4); ctx.fillRect(-7, -55, 14, 7); ctx.fillRect(-5, -58, 10, 5)
+      ctx.fillRect(7, -50, 6, 3)
+      ctx.fillStyle = "#5a7a5a"; ctx.fillRect(-6, -55, 5, 2)
+      // Hair
+      ctx.fillStyle = "#3a2a1a"
+      ctx.fillRect(-9, -48, 18, 4); ctx.fillRect(-9, -48, 3, 8); ctx.fillRect(6, -48, 3, 6)
+      // Glasses
+      ctx.fillStyle = M
+      ctx.fillRect(-7, -42, 6, 4); ctx.fillRect(1, -42, 6, 4); ctx.fillRect(-1, -41, 2, 1)
+      ctx.fillStyle = C
+      ctx.fillRect(-6, -41, 4, 2); ctx.fillRect(2, -41, 4, 2)
+      // Tears — animated dots falling
+      const gs = gameState.current
+      const tearOffset = (gs.cryTimer % 20) / 20
+      ctx.fillStyle = COLORS.lightest
+      ctx.globalAlpha = 0.9
+      ctx.fillRect(-6, Math.round(-38 + tearOffset * 10), 2, 2) // left tear
+      ctx.fillRect(4, Math.round(-36 + tearOffset * 10), 2, 2)  // right tear
+      if (tearOffset > 0.4) {
+        ctx.fillRect(-6, Math.round(-38 + (tearOffset - 0.4) * 10), 2, 2)
+        ctx.fillRect(4, Math.round(-36 + (tearOffset - 0.4) * 10), 2, 2)
+      }
+      ctx.globalAlpha = 1
     }
 
     const drawCityBar = () => {
@@ -833,27 +977,62 @@ export default function DriveGame() {
       }
 
       if (gs.state === "gameover") {
-        ctx.fillStyle = "rgba(10,10,26,0.92)"; ctx.fillRect(0, 0, CW, CH)
+        ctx.fillStyle = "rgba(10,10,26,0.95)"; ctx.fillRect(0, 0, CW, CH)
         ctx.textAlign = "center"
-        const bx = CW/2-140, by = 120, bw = 280, bh = 70
+
+        // Score box at top
+        const bx = CW/2-130, by = 14, bw = 260, bh = 56
         ctx.fillStyle = COLORS.dark; ctx.fillRect(bx, by, bw, bh)
-        ctx.strokeStyle = COLORS.light; ctx.lineWidth = 3; ctx.strokeRect(bx, by, bw, bh)
-        ctx.fillStyle = COLORS.lightest; ctx.font = '9px "Press Start 2P", monospace'
-        ctx.fillText("DELIVERIES COMPLETED", CW/2, by + 24)
-        ctx.fillStyle = COLORS.light; ctx.font = '26px "Press Start 2P", monospace'
-        ctx.fillText(String(gs.totalDeliveries), CW/2, by + 58)
-        ctx.fillStyle = COLORS.lightest; ctx.font = '18px "Press Start 2P", monospace'
-        ctx.fillText("MISS!", CW/2, CH/2 - 30)
-        ctx.font = '7px "Press Start 2P", monospace'; ctx.fillStyle = COLORS.mid
-        ctx.fillText("YOU FAILED TO", CW/2, CH/2); ctx.fillText("DELIVER THE DRIVE!", CW/2, CH/2 + 14)
-        const btnY = CH/2 + 40, btnW = 170, btnH = 32, btnX = CW/2 - btnW/2
+        ctx.strokeStyle = COLORS.light; ctx.lineWidth = 2; ctx.strokeRect(bx, by, bw, bh)
+        ctx.fillStyle = COLORS.lightest; ctx.font = '7px "Press Start 2P", monospace'
+        ctx.fillText("DELIVERIES COMPLETED", CW/2, by + 16)
+        ctx.fillStyle = COLORS.light; ctx.font = '22px "Press Start 2P", monospace'
+        ctx.fillText(String(gs.totalDeliveries), CW/2, by + 46)
+
+        // Name entry prompt if active
+        const ne = nameEntryRef.current
+        if (ne.active && !ne.saved) {
+          ctx.fillStyle = COLORS.light; ctx.font = '8px "Press Start 2P", monospace'
+          ctx.fillText("NEW HIGH SCORE!", CW/2, 88)
+          ctx.fillStyle = COLORS.lightest; ctx.font = '6px "Press Start 2P", monospace'
+          ctx.fillText("ENTER NAME BELOW & PRESS SUBMIT", CW/2, 102)
+        }
+
+        // Leaderboard
+        const lb = leaderboardRef.current
+        const lbY = ne.active && !ne.saved ? 116 : 88
+        const lbH = 10 * 18 + 20
+        ctx.fillStyle = COLORS.darkest; ctx.fillRect(20, lbY, CW-40, lbH)
+        ctx.strokeStyle = COLORS.mid; ctx.lineWidth = 1; ctx.strokeRect(20, lbY, CW-40, lbH)
+        ctx.fillStyle = COLORS.pink; ctx.font = '6px "Press Start 2P", monospace'
+        ctx.fillStyle = COLORS.light; ctx.fillText("TOP 10 SCORES", CW/2, lbY + 12)
+        if (lb.length === 0) {
+          ctx.fillStyle = COLORS.mid; ctx.font = '6px "Press Start 2P", monospace'
+          ctx.fillText("NO SCORES YET", CW/2, lbY + 30)
+        } else {
+          lb.slice(0,10).forEach((entry, i) => {
+            const ey = lbY + 24 + i * 18
+            const isPlayer = !ne.active && i === lb.findIndex(e => e.score === gs.totalDeliveries)
+            ctx.fillStyle = i === 0 ? COLORS.light : isPlayer ? "#ffff00" : COLORS.lightest
+            ctx.font = '6px "Press Start 2P", monospace'
+            ctx.textAlign = "left"
+            ctx.fillText(`${i+1}. ${(entry.name || "ANON").substring(0,8).padEnd(8," ")}`, 30, ey)
+            ctx.textAlign = "right"
+            ctx.fillText(String(entry.score), CW - 30, ey)
+          })
+          ctx.textAlign = "center"
+        }
+
+        // Try again button
+        const btnY = lbY + lbH + 8
         const blink = Math.floor(Date.now() / 500) % 2
+        const btnW = 160, btnH = 28, btnX = CW/2 - btnW/2
         ctx.fillStyle = blink ? COLORS.dark : COLORS.darkest; ctx.fillRect(btnX, btnY, btnW, btnH)
         ctx.strokeStyle = blink ? COLORS.light : COLORS.mid; ctx.lineWidth = 2
         ctx.strokeRect(btnX, btnY, btnW, btnH)
         ctx.fillStyle = blink ? COLORS.lightest : COLORS.mid
-        ctx.font = '8px "Press Start 2P", monospace'
-        ctx.fillText("TRY AGAIN", CW/2, btnY + btnH/2 + 4)
+        ctx.font = '7px "Press Start 2P", monospace'
+        ctx.fillText("TRY AGAIN", CW/2, btnY + btnH/2 + 3)
       }
     }
 
@@ -916,7 +1095,7 @@ export default function DriveGame() {
       {screen === "home" && (
         <div className="absolute inset-0" style={{ background: COLORS.darkest }}>
           <img
-            src="/cory2.png"
+            src="/cory3.png"
             alt="Corys Drive Delivery Challenge"
             style={{
               position: "absolute", inset: 0,
@@ -970,6 +1149,46 @@ export default function DriveGame() {
           >
             THROW!
           </button>
+          {/* Name entry overlay — shown when player qualifies for leaderboard */}
+          {nameEntryActive && (
+            <div className="absolute z-20 flex flex-col items-center gap-2"
+              style={{ top: "42%", left: "50%", transform: "translateX(-50%)", width: 240 }}>
+              <input
+                autoFocus
+                maxLength={8}
+                placeholder="YOUR NAME"
+                style={{
+                  background: COLORS.darkest, color: COLORS.lightest,
+                  border: `2px solid ${COLORS.lightest}`,
+                  fontFamily: '"Press Start 2P", monospace', fontSize: 12,
+                  padding: "6px 10px", width: "100%", textAlign: "center",
+                  outline: "none", letterSpacing: 3,
+                }}
+                onChange={(e) => { nameEntryRef.current.name = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"") }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const n = nameEntryRef.current
+                    if (n.name.trim()) { n.saved = true; setNameEntryActive(false); saveScore(n.name, gameState.current.totalDeliveries) }
+                  }
+                }}
+              />
+              <button
+                style={{
+                  background: COLORS.darkest, color: COLORS.light,
+                  border: `2px solid ${COLORS.light}`,
+                  fontFamily: '"Press Start 2P", monospace', fontSize: 9,
+                  padding: "6px 20px", cursor: "pointer", letterSpacing: 2, width: "100%",
+                }}
+                onClick={() => {
+                  const n = nameEntryRef.current
+                  const name = n.name.trim() || "ANON"
+                  n.saved = true
+                  setNameEntryActive(false)
+                  saveScore(name, gameState.current.totalDeliveries)
+                }}
+              >SUBMIT SCORE</button>
+            </div>
+          )}
         </div>
       )}
 
