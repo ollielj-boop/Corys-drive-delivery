@@ -145,6 +145,7 @@ export default function DriveGame() {
       | "knocking"       // drive hit projector wrong (near miss)
       | "miss"           // flash timer running
       | "crying"     // character on knees after miss
+      | "win"          // completed all 1126 deliveries
       | "gameover",
     arrowX: 0,
     arrowDir: 1,
@@ -174,10 +175,15 @@ export default function DriveGame() {
     shatterTimer: 0,
     knockTimer: 0,
     cryTimer: 0,
+    winTimer: 0,
+    finalMode: false,
   })
 
   const nameEntryRef = useRef({ active: false, name: "", saved: false })
   const [nameEntryActive, setNameEntryActive] = useState(false)
+  const [winScreen, setWinScreen] = useState(false)
+  const winNameEntryRef = useRef({ active: false, name: "", saved: false })
+  const [winNameEntryActive, setWinNameEntryActive] = useState(false)
 
   const scaleShell = useCallback(() => {
     const shell = shellRef.current
@@ -248,11 +254,14 @@ export default function DriveGame() {
     gs.shatterTimer = 0
     gs.knockTimer = 0
     gs.cryTimer = 0
+    gs.winTimer = 0
+    gs.finalMode = false
     ;(gs as any).throwType = null
     particlesRef.current = []
     if (!keepTotal) {
       gs.totalDeliveries = 0
       gs.extraMode = false
+      gs.finalMode = false
       gs.shelves.forEach((s) => {
         s.projecting = false
         s.delivered = false
@@ -331,7 +340,7 @@ export default function DriveGame() {
     const gs = gameState.current
     if (gs.state !== "idle") return
     const s = gs.shelves[gs.level]
-    const inGap = gs.arrowX >= s.gapLeft && gs.arrowX <= s.gapRight
+    const inGap = gs.arrowX > s.gapLeft + 1 && gs.arrowX < s.gapRight - 1  // strict: 2px inset each side
 
     // Knock only triggers if arrow is strictly over the projector body itself (30px box beside the gap)
     const projBodyLeft = s.side === "left" ? s.gapRight + 5 : s.gapLeft - 35
@@ -386,6 +395,9 @@ export default function DriveGame() {
     particlesRef.current = []
     nameEntryRef.current = { active: false, name: "", saved: false }
     setNameEntryActive(false)
+    winNameEntryRef.current = { active: false, name: "", saved: false }
+    setWinNameEntryActive(false)
+    setWinScreen(false)
     fetchLeaderboard()
   }, [buildLayout, initLevel, fetchLeaderboard])
 
@@ -407,29 +419,22 @@ export default function DriveGame() {
     x.fillStyle = COLORS.dark; x.fillRect(14, 14, CW-28, 148)
     x.strokeStyle = COLORS.light; x.lineWidth = 2; x.strokeRect(14, 14, CW-28, 148)
 
-    // Flashing urgent label
-    x.fillStyle = COLORS.light; x.font = '8px "Press Start 2P", monospace'
-    x.textAlign = "center"; x.fillText("!! URGENT MISSION !!", CW/2, 32)
-
-    // Story text — wrapped manually
-    x.fillStyle = COLORS.lightest; x.font = '6px "Press Start 2P", monospace'
-    x.textAlign = "left"
+    // Story text — large, fills the box
+    x.fillStyle = COLORS.lightest; x.font = '8px "Press Start 2P", monospace'
+    x.textAlign = "center"
     const story = [
       "BLACK BEAR ARE RELEASING",
       "'CRANK 3' TONIGHT BUT",
       "ELECTRONIC DELIVERY IS",
       "DOWN AT ALL 1126 SITES",
       "ACROSS UK & IRELAND.",
-      "",
-      "CAN YOU HAND DELIVER TO",
-      "ALL SITES AND SAVE",
-      "THE RELEASE?!",
+      "CAN YOU HAND DELIVER",
+      "TO ALL SITES AND",
+      "SAVE THE RELEASE?!",
     ]
     story.forEach((line, i) => {
-      if (line === "") return
-      x.fillText(line, 22, 48 + i * 13)
+      x.fillText(line, CW/2, 30 + i * 17)
     })
-    x.textAlign = "center"
 
     // ── HOW TO PLAY heading ──
     x.fillStyle = COLORS.dark; x.fillRect(14, 170, CW-28, 22)
@@ -617,18 +622,65 @@ export default function DriveGame() {
           const s = gs.shelves[gs.level]
           s.projecting = false; s.delivered = true
           gs.totalDeliveries++
-          if (gs.level < 4) {
-            gs.level++
-            const ns = gs.shelves[gs.level]
-            gs.driveX = ns.side === "left" ? 40 : CW - 40
-            gs.driveY = ns.y - DRIVE_H
-            gs.state = "idle"; gs.characterThrowFrame = 0
-            initArrow(gs.level)
-          } else {
-            gs.extraMode = true
-            buildLayout(true); initLevel(0, true)
+
+          // ── WIN: completed all 1126 deliveries ──
+          if (gs.totalDeliveries >= 1126) {
+            gs.state = "win"
+            gs.winTimer = 0
+            // Trigger win name entry if score qualifies
+            if (gs.totalDeliveries > 0) {
+              const lb = leaderboardRef.current
+              if (lb.length < 10 || gs.totalDeliveries > (lb[lb.length - 1]?.score ?? 0)) {
+                winNameEntryRef.current = { active: true, name: "", saved: false }
+                setWinNameEntryActive(true)
+              }
+            }
+            setWinScreen(true)
+            return
+          }
+
+          // ── FINAL LEVEL: 1125 deliveries done, one site left ──
+          if (gs.totalDeliveries === 1125 && !gs.finalMode) {
+            gs.finalMode = true
+            // Build a single-shelf layout for the final level
+            const finalShelf: typeof gs.shelves[0] = {
+              y: Math.round(HUD_H + GAME_H / 2),
+              gapLeft: Math.round(CW / 2) - 16,
+              gapRight: Math.round(CW / 2) + 16,
+              side: "left",
+              projecting: false, delivered: false,
+              knocked: false, knockAngle: 0, knockTimer: 0
+            }
+            gs.shelves = [finalShelf]
+            gs.level = 0
+            gs.driveX = finalShelf.side === "left" ? 40 : CW - 40
+            gs.driveY = finalShelf.y - DRIVE_H
+            gs.state = "idle"
+            gs.characterThrowFrame = 0
+            // 20% extra speed on top of normal extra mode speed
+            gs.arrowSpeed = (ARROW_SPEED_BASE + 4 * 0.9) * 0.85 * 1.20
+            return
+          }
+
+          // ── Normal level progression ──
+          if (!gs.finalMode) {
+            if (gs.level < 4) {
+              gs.level++
+              const ns = gs.shelves[gs.level]
+              gs.driveX = ns.side === "left" ? 40 : CW - 40
+              gs.driveY = ns.y - DRIVE_H
+              gs.state = "idle"; gs.characterThrowFrame = 0
+              initArrow(gs.level)
+            } else {
+              gs.extraMode = true
+              buildLayout(true); initLevel(0, true)
+            }
           }
         }
+      }
+
+      if (gs.state === "win") {
+        gs.winTimer++
       }
 
       if (gs.state === "miss") {
@@ -761,15 +813,16 @@ export default function DriveGame() {
       } else if (!isKnocked) {
         const slotColor = isCurrentLevel ? COLORS.driveInput : COLORS.dark
         ctx.fillStyle = slotColor
-        ctx.fillRect(gl, s.y - 8, gr - gl, 8)
+        ctx.fillRect(gl + 2, s.y - 8, gr - gl - 4, 8)  // inset 2px each side to match hit zone
         ctx.strokeStyle = isCurrentLevel ? COLORS.driveInput : COLORS.mid
         ctx.lineWidth = 2
-        ctx.strokeRect(gl - 1, s.y - 9, gr - gl + 2, 10)
+        ctx.strokeRect(gl + 1, s.y - 9, gr - gl - 2, 10)
         if (index === 0 && gs.level === 0 && gs.totalDeliveries === 0 && !gs.extraMode) {
           ctx.fillStyle = COLORS.driveInput
-          ctx.font = '5px "Press Start 2P", monospace'
+          ctx.font = '7px "Press Start 2P", monospace'
           ctx.textAlign = "center"
-          ctx.fillText("DRIVE INPUT", (gl + gr) / 2, s.y - 12)
+          ctx.fillText("DRIVE", (gl + gr) / 2, s.y - 20)
+          ctx.fillText("INPUT", (gl + gr) / 2, s.y - 10)
         }
         if (gs.state === "idle" && gs.level === index) {
           ctx.fillStyle = "rgba(0,255,102,0.25)"
@@ -829,8 +882,9 @@ export default function DriveGame() {
       const aw = 10, ah = 12
 
       if (gs.state === "idle") {
+        // Green zone matches the pixel-accurate hit zone (2px inset each side)
         ctx.fillStyle = "rgba(0,255,102,0.15)"
-        ctx.fillRect(s.gapLeft, s.y - 20, s.gapRight - s.gapLeft, 20)
+        ctx.fillRect(s.gapLeft + 2, s.y - 20, s.gapRight - s.gapLeft - 4, 20)
         const ax = Math.round(gs.arrowX), ay = s.y - 14
         ctx.fillStyle = COLORS.light
         ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax-aw, ay-ah); ctx.lineTo(ax+aw, ay-ah)
@@ -1015,12 +1069,58 @@ export default function DriveGame() {
       ctx.fillStyle = COLORS.darkest; ctx.fillRect(0, 0, CW, HUD_H)
       ctx.fillStyle = COLORS.light; ctx.font = '6px "Press Start 2P", monospace'
       ctx.textAlign = "left"; ctx.fillText("CORYS DRIVE", 6, 10); ctx.fillText("DELIVERY", 6, 20)
-      ctx.fillStyle = COLORS.lightest; ctx.font = '9px "Press Start 2P", monospace'
-      ctx.textAlign = "right"; ctx.fillText(gameState.current.totalDeliveries + " SITES", CW - 6, 19)
+      ctx.fillStyle = COLORS.lightest; ctx.font = '7px "Press Start 2P", monospace'
+      ctx.textAlign = "right"
+      const gs2 = gameState.current
+      if (gs2.finalMode) {
+        ctx.fillStyle = "#ffd632"
+        ctx.fillText("FINAL SITE!", CW - 6, 19)
+      } else {
+        ctx.fillText(gs2.totalDeliveries + " / 1126", CW - 6, 19)
+      }
     }
 
     const drawOverlays = () => {
       const gs = gameState.current
+
+      if (gs.state === "win") {
+        ctx.fillStyle = "rgba(10,10,26,0.97)"; ctx.fillRect(0, 0, CW, CH)
+        ctx.textAlign = "center"
+        // Gold celebration header
+        const pulse = Math.sin(Date.now() * 0.005) * 0.3 + 0.7
+        ctx.fillStyle = `rgba(255,220,50,${pulse})`
+        ctx.font = '10px "Press Start 2P", monospace'
+        ctx.fillText("★ GAME COMPLETE! ★", CW/2, 50)
+        // Score
+        const wbx = CW/2-130, wby = 64, wbw = 260, wbh = 56
+        ctx.fillStyle = COLORS.dark; ctx.fillRect(wbx, wby, wbw, wbh)
+        ctx.strokeStyle = "#ffd632"; ctx.lineWidth = 2; ctx.strokeRect(wbx, wby, wbw, wbh)
+        ctx.fillStyle = COLORS.lightest; ctx.font = '7px "Press Start 2P", monospace'
+        ctx.fillText("ALL 1126 SITES DELIVERED!", CW/2, wby + 18)
+        ctx.fillStyle = "#ffd632"; ctx.font = '22px "Press Start 2P", monospace'
+        ctx.fillText("1126", CW/2, wby + 48)
+        // Story text — the bad news
+        const winLines = [
+          "CONGRATULATIONS, YOU",
+          "SAVED THE RELEASE!",
+          "",
+          "UNFORTUNATELY THE MOVIE",
+          "WAS A TERRIBLE FLOP.",
+          "BARELY ANYONE WENT TO",
+          "SEE IT AND THE COMPANY",
+          "IS NOW IN FINANCIAL",
+          "TROUBLE.",
+          "",
+          "YOU HAVE BEEN FIRED IN",
+          "AN EFFORT TO CUT COSTS.",
+        ]
+        ctx.fillStyle = COLORS.lightest; ctx.font = '6px "Press Start 2P", monospace'
+        let wy = 138
+        winLines.forEach(line => {
+          if (line !== "") ctx.fillText(line, CW/2, wy)
+          wy += 13
+        })
+      }
 
       if (gs.state === "miss" && gs.flashTimer > 0) {
         const flash = Math.floor(gs.flashTimer / 6) % 2 === 0
@@ -1044,7 +1144,7 @@ export default function DriveGame() {
         ctx.fillText(String(gs.totalDeliveries), CW/2, by + 46)
         // Dark screens count
         const darkScreens = Math.max(0, 1126 - gs.totalDeliveries)
-        ctx.fillStyle = COLORS.mid; ctx.font = '6px "Press Start 2P", monospace'
+        ctx.fillStyle = "#ff6666"; ctx.font = '6px "Press Start 2P", monospace'
         ctx.fillText(darkScreens + " DARK SCREENS", CW/2, by + 62)
 
         // Leaderboard (shown once name has been submitted or skipped)
@@ -1199,6 +1299,74 @@ export default function DriveGame() {
           >
             THROW!
           </button>
+          {/* WIN screen name entry */}
+          {winScreen && !winNameEntryActive && (
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-end pb-8"
+              style={{ background: "transparent" }}>
+              <button
+                style={{
+                  background: COLORS.darkest, color: "#ffd632",
+                  border: "3px solid #ffd632",
+                  fontFamily: '"Press Start 2P", monospace', fontSize: 10,
+                  padding: "10px 0", cursor: "pointer", letterSpacing: 3,
+                  width: 260, display: "block", marginBottom: 8,
+                }}
+                onClick={() => { setWinScreen(false); doRetry() }}
+              >PLAY AGAIN ▶</button>
+            </div>
+          )}
+          {winScreen && winNameEntryActive && (
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center"
+              style={{ background: "rgba(10,10,26,0.97)" }}>
+              <div style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 9, color: "#ffd632", marginBottom: 8, letterSpacing: 2 }}>
+                ★ ALL 1126 DELIVERED! ★
+              </div>
+              <div style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 7, color: COLORS.lightest, marginBottom: 8 }}>
+                ENTER YOUR NAME:
+              </div>
+              <input
+                autoFocus
+                maxLength={8}
+                placeholder="YOUR NAME"
+                style={{
+                  background: COLORS.darkest, color: COLORS.lightest,
+                  border: `2px solid #ffd632`,
+                  fontFamily: '"Press Start 2P", monospace', fontSize: 16,
+                  padding: "8px 12px", width: 220, textAlign: "center",
+                  outline: "none", letterSpacing: 4, marginBottom: 12,
+                  display: "block",
+                }}
+                onChange={(e) => {
+                  winNameEntryRef.current.name = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"")
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const n = winNameEntryRef.current
+                    const name = (n.name.trim() || "ANON").substring(0,8)
+                    n.saved = true; setWinNameEntryActive(false)
+                    saveScore(name, 1126)
+                  }
+                }}
+              />
+              <button
+                style={{
+                  background: COLORS.darkest, color: "#ffd632",
+                  border: "3px solid #ffd632",
+                  fontFamily: '"Press Start 2P", monospace', fontSize: 10,
+                  padding: "10px 0", cursor: "pointer", letterSpacing: 3,
+                  width: 220, display: "block", marginBottom: 10,
+                }}
+                onClick={() => {
+                  const n = winNameEntryRef.current
+                  const name = (n.name.trim() || "ANON").substring(0,8)
+                  n.saved = true; setWinNameEntryActive(false)
+                  saveScore(name, 1126)
+                }}
+              >SUBMIT ▶</button>
+              <div style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 6, color: COLORS.mid }}>OR PRESS ENTER</div>
+            </div>
+          )}
+
           {/* Name entry modal — fullscreen overlay, clean layout */}
           {nameEntryActive && (
             <div className="absolute inset-0 z-30 flex flex-col items-center justify-center"
@@ -1231,7 +1399,7 @@ export default function DriveGame() {
                 style={{
                   background: COLORS.darkest, color: COLORS.lightest,
                   border: `2px solid ${COLORS.lightest}`,
-                  fontFamily: '"Press Start 2P", monospace', fontSize: 13,
+                  fontFamily: '"Press Start 2P", monospace', fontSize: 16,
                   padding: "8px 12px", width: 220, textAlign: "center",
                   outline: "none", letterSpacing: 4, marginBottom: 12,
                   display: "block",
