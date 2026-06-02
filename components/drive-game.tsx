@@ -25,7 +25,7 @@ const SHELF_H = 18
 const HUD_H = 28
 const BTN_H = 68
 const GAME_H = CH - HUD_H - BTN_H
-const ARROW_SPEED_BASE = 3.0
+const ARROW_SPEED_BASE = 2.55  // reduced 15% from 3.0
 const THROW_SPEED = 5.5
 
 interface Shelf {
@@ -88,44 +88,50 @@ export default function DriveGame() {
   const [leaderboardLoaded, setLeaderboardLoaded] = useState(false)
 
   const JSONBIN_ID = "6a1dac23ddf5aa59f780b928"
+  const JSONBIN_MASTER = "$2a$10$j9Je6LWLgZ8bLj9taSfN9.aFpkEdkROTaYo1Xda98/f32ff4fw8rq"
   const JSONBIN_KEY = "$2a$10$R1A.gZKB76C.5eQ7Mq9h6O68el4D/RL3Es4vGgyX3Ya4ePgEHslv2"
   const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${JSONBIN_ID}`
 
   const fetchLeaderboard = useCallback(async () => {
     try {
       const res = await fetch(JSONBIN_URL + "/latest", {
-        headers: { "X-Access-Key": JSONBIN_KEY }
+        headers: { "X-Master-Key": JSONBIN_MASTER, "X-Access-Key": JSONBIN_KEY }
       })
       if (!res.ok) return
       const data = await res.json()
       leaderboardRef.current = Array.isArray(data.record?.scores) ? data.record.scores : []
       setLeaderboardLoaded(true)
     } catch(e) {}
-  }, [JSONBIN_URL, JSONBIN_KEY])
+  }, [JSONBIN_URL, JSONBIN_MASTER, JSONBIN_KEY])
 
   const saveScore = useCallback(async (name: string, score: number) => {
     try {
-      // Fetch latest first
+      // Each game is its own entry — same player can appear multiple times
       const res = await fetch(JSONBIN_URL + "/latest", {
-        headers: { "X-Access-Key": JSONBIN_KEY }
+        headers: { "X-Master-Key": JSONBIN_MASTER, "X-Access-Key": JSONBIN_KEY }
       })
       let scores: {name: string, score: number}[] = []
       if (res.ok) {
         const data = await res.json()
         scores = Array.isArray(data.record?.scores) ? data.record.scores : []
       }
+      // Push new entry — no deduplication, every score is independent
       scores.push({ name: name.toUpperCase().trim().substring(0,8) || "ANON", score })
       scores.sort((a, b) => b.score - a.score)
       scores = scores.slice(0, 10)
       await fetch(JSONBIN_URL, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", "X-Access-Key": JSONBIN_KEY },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Master-Key": JSONBIN_MASTER,
+          "X-Access-Key": JSONBIN_KEY
+        },
         body: JSON.stringify({ scores })
       })
       leaderboardRef.current = scores
       setLeaderboardLoaded(true)
     } catch(e) {}
-  }, [JSONBIN_URL, JSONBIN_KEY])
+  }, [JSONBIN_URL, JSONBIN_MASTER, JSONBIN_KEY])
 
   const gameState = useRef({
     level: 0,
@@ -224,7 +230,7 @@ export default function DriveGame() {
     const s = gs.shelves[lv]
     gs.arrowX = gs.driveX
     gs.arrowDir = s.side === "left" ? 1 : -1
-    gs.arrowSpeed = ARROW_SPEED_BASE + (gs.extraMode ? 4 : lv) * 0.9
+    gs.arrowSpeed = (ARROW_SPEED_BASE + (gs.extraMode ? 4 : lv) * 0.9) * 0.85  // 15% reduction
   }, [])
 
   const initLevel = useCallback((lv: number, keepTotal: boolean) => {
@@ -392,48 +398,89 @@ export default function DriveGame() {
     if (!x) return
 
     x.fillStyle = COLORS.darkest; x.fillRect(0, 0, CW, CH)
-    x.fillStyle = COLORS.dark; x.fillRect(20, 40, 320, 56)
-    x.strokeStyle = COLORS.light; x.lineWidth = 3; x.strokeRect(20, 40, 320, 56)
-    x.fillStyle = COLORS.lightest; x.font = '14px "Press Start 2P", monospace'
-    x.textAlign = "center"; x.fillText("HOW TO PLAY", CW / 2, 76)
 
-    x.fillStyle = COLORS.darkest; x.fillRect(20, 130, 320, 300)
-    x.strokeStyle = COLORS.dark; x.lineWidth = 2; x.strokeRect(20, 130, 320, 300)
-
-    x.fillStyle = COLORS.light
-    x.beginPath(); x.moveTo(CW/2, 168); x.lineTo(CW/2-14, 148); x.lineTo(CW/2+14, 148)
-    x.closePath(); x.fill()
-    x.fillStyle = COLORS.lightest; x.font = '7px "Press Start 2P", monospace'
-    x.fillText("AN ARROW SWEEPS", CW/2, 190); x.fillText("BACK AND FORTH", CW/2, 204)
-
-    x.strokeStyle = COLORS.dark; x.lineWidth = 1
-    x.beginPath(); x.moveTo(40, 218); x.lineTo(320, 218); x.stroke()
-
-    x.fillStyle = COLORS.lightest; x.fillRect(CW/2-20, 228, 40, 12)
-    x.fillStyle = "#00ff66"; x.fillRect(CW/2-18, 226, 36, 4)
-    x.fillStyle = COLORS.lightest; x.font = '7px "Press Start 2P", monospace'
-    x.fillText("STOP THE ARROW", CW/2, 256); x.fillText("OVER THE GREEN SLOT", CW/2, 270)
-
-    x.beginPath(); x.moveTo(40, 284); x.lineTo(320, 284); x.stroke()
-
-    x.fillStyle = COLORS.mid; x.fillRect(CW/2-10, 294, 20, 14)
-    x.fillStyle = COLORS.lightest; x.fillRect(CW/2-8, 296, 6, 4)
-    x.fillStyle = COLORS.lightest; x.font = '7px "Press Start 2P", monospace'
-    x.fillText("CLICK THROW / SPACE", CW/2, 326); x.fillText("TO THROW DRIVE", CW/2, 340)
-
-    x.beginPath(); x.moveTo(40, 354); x.lineTo(320, 354); x.stroke()
-
-    x.fillStyle = COLORS.light; x.font = '7px "Press Start 2P", monospace'
-    x.fillText("LAND THE DRIVE IN THE", CW/2, 376)
-    x.fillText("PROJECTOR SLOT!", CW/2, 390)
-    x.fillText("MISS = DRIVE SMASHES!", CW/2, 410)
-
-    x.fillStyle = COLORS.lightest; x.font = '8px "Press Start 2P", monospace'
-    x.fillText("TAP / CLICK TO START", CW/2, 480)
-    x.fillStyle = COLORS.light
-    x.fillRect(CW/2-12, 496, 6, 6); x.fillRect(CW/2-3, 496, 6, 6); x.fillRect(CW/2+6, 496, 6, 6)
+    // Outer border
     x.strokeStyle = COLORS.light; x.lineWidth = 4; x.strokeRect(4, 4, CW-8, CH-8)
     x.strokeStyle = COLORS.dark; x.lineWidth = 2; x.strokeRect(10, 10, CW-20, CH-20)
+
+    // ── Story box at top ──
+    x.fillStyle = COLORS.dark; x.fillRect(14, 14, CW-28, 148)
+    x.strokeStyle = COLORS.light; x.lineWidth = 2; x.strokeRect(14, 14, CW-28, 148)
+
+    // Flashing urgent label
+    x.fillStyle = COLORS.light; x.font = '8px "Press Start 2P", monospace'
+    x.textAlign = "center"; x.fillText("!! URGENT MISSION !!", CW/2, 32)
+
+    // Story text — wrapped manually
+    x.fillStyle = COLORS.lightest; x.font = '6px "Press Start 2P", monospace'
+    x.textAlign = "left"
+    const story = [
+      "BLACK BEAR ARE RELEASING",
+      "'CRANK 3' TONIGHT BUT",
+      "ELECTRONIC DELIVERY IS",
+      "DOWN AT ALL 1126 SITES",
+      "ACROSS UK & IRELAND.",
+      "",
+      "CAN YOU HAND DELIVER TO",
+      "ALL SITES AND SAVE",
+      "THE RELEASE?!",
+    ]
+    story.forEach((line, i) => {
+      if (line === "") return
+      x.fillText(line, 22, 48 + i * 13)
+    })
+    x.textAlign = "center"
+
+    // ── HOW TO PLAY heading ──
+    x.fillStyle = COLORS.dark; x.fillRect(14, 170, CW-28, 22)
+    x.strokeStyle = COLORS.mid; x.lineWidth = 1; x.strokeRect(14, 170, CW-28, 22)
+    x.fillStyle = COLORS.light; x.font = '9px "Press Start 2P", monospace'
+    x.fillText("HOW TO PLAY", CW/2, 186)
+
+    // ── Steps ──
+    x.fillStyle = COLORS.darkest; x.fillRect(14, 194, CW-28, 248)
+    x.strokeStyle = COLORS.dark; x.lineWidth = 1; x.strokeRect(14, 194, CW-28, 248)
+
+    // Step 1 — arrow
+    x.fillStyle = COLORS.light
+    x.beginPath(); x.moveTo(CW/2, 222); x.lineTo(CW/2-10, 206); x.lineTo(CW/2+10, 206)
+    x.closePath(); x.fill()
+    x.fillStyle = COLORS.lightest; x.font = '6px "Press Start 2P", monospace'
+    x.fillText("AN ARROW SWEEPS BACK & FORTH", CW/2, 236)
+
+    x.strokeStyle = COLORS.dark; x.lineWidth = 1
+    x.beginPath(); x.moveTo(30, 246); x.lineTo(CW-30, 246); x.stroke()
+
+    // Step 2 — slot
+    x.fillStyle = COLORS.lightest; x.fillRect(CW/2-16, 254, 32, 10)
+    x.fillStyle = "#00ff66"; x.fillRect(CW/2-14, 252, 28, 4)
+    x.fillStyle = COLORS.lightest; x.font = '6px "Press Start 2P", monospace'
+    x.fillText("STOP IT OVER THE GREEN SLOT", CW/2, 278)
+
+    x.beginPath(); x.moveTo(30, 288); x.lineTo(CW-30, 288); x.stroke()
+
+    // Step 3 — drive icon
+    x.fillStyle = COLORS.mid; x.fillRect(CW/2-8, 296, 16, 10)
+    x.fillStyle = COLORS.lightest; x.fillRect(CW/2-6, 298, 4, 3)
+    x.fillStyle = COLORS.light; x.fillRect(CW/2+1, 298, 4, 5)
+    x.fillStyle = COLORS.lightest; x.font = '6px "Press Start 2P", monospace'
+    x.fillText("TAP THROW / PRESS SPACE", CW/2, 318)
+
+    x.beginPath(); x.moveTo(30, 328); x.lineTo(CW-30, 328); x.stroke()
+
+    // Step 4 — goal
+    x.fillStyle = COLORS.light; x.font = '6px "Press Start 2P", monospace'
+    x.fillText("LAND IN PROJECTOR SLOT!", CW/2, 346)
+    x.fillText("MISS = CRANK 3 STAYS DARK!", CW/2, 360)
+    x.fillText("DELIVER ALL 1126 SITES!", CW/2, 374)
+
+    x.beginPath(); x.moveTo(30, 384); x.lineTo(CW-30, 384); x.stroke()
+
+    // Tap to start
+    x.fillStyle = COLORS.lightest; x.font = '7px "Press Start 2P", monospace'
+    x.fillText("TAP / CLICK TO START", CW/2, 430)
+    x.fillStyle = COLORS.light
+    x.fillRect(CW/2-12, 444, 6, 6); x.fillRect(CW/2-3, 444, 6, 6); x.fillRect(CW/2+6, 444, 6, 6)
   }, [screen])
 
   // Main game loop
@@ -791,12 +838,19 @@ export default function DriveGame() {
         ctx.strokeStyle = COLORS.lightest; ctx.lineWidth = 1; ctx.stroke()
       }
 
-      if (gs.missArrowX >= 0 && ["miss_arc","shattering","knocking","arcing","crying","miss","gameover"].includes(gs.state)) {
+      if (gs.missArrowX >= 0 && gs.state !== "idle") {
         const ax = Math.round(gs.missArrowX), ay = s.y - 14
-        ctx.globalAlpha = 0.4
-        ctx.fillStyle = COLORS.dark
+        // Bright pink ghost arrow — clearly visible against any background
+        ctx.globalAlpha = 0.85
+        ctx.fillStyle = COLORS.light
         ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax-aw, ay-ah); ctx.lineTo(ax+aw, ay-ah)
         ctx.closePath(); ctx.fill()
+        // Dashed vertical line down to the slot to show how far off
+        ctx.strokeStyle = COLORS.light
+        ctx.lineWidth = 1
+        ctx.setLineDash([3, 3])
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax, s.y - 8); ctx.stroke()
+        ctx.setLineDash([])
         ctx.globalAlpha = 1
       }
     }
@@ -981,26 +1035,22 @@ export default function DriveGame() {
         ctx.textAlign = "center"
 
         // Score box at top
-        const bx = CW/2-130, by = 14, bw = 260, bh = 56
+        const bx = CW/2-130, by = 14, bw = 260, bh = 68
         ctx.fillStyle = COLORS.dark; ctx.fillRect(bx, by, bw, bh)
         ctx.strokeStyle = COLORS.light; ctx.lineWidth = 2; ctx.strokeRect(bx, by, bw, bh)
         ctx.fillStyle = COLORS.lightest; ctx.font = '7px "Press Start 2P", monospace'
-        ctx.fillText("DELIVERIES COMPLETED", CW/2, by + 16)
+        ctx.fillText("DRIVES DELIVERED", CW/2, by + 16)
         ctx.fillStyle = COLORS.light; ctx.font = '22px "Press Start 2P", monospace'
         ctx.fillText(String(gs.totalDeliveries), CW/2, by + 46)
+        // Dark screens count
+        const darkScreens = Math.max(0, 1126 - gs.totalDeliveries)
+        ctx.fillStyle = COLORS.mid; ctx.font = '6px "Press Start 2P", monospace'
+        ctx.fillText(darkScreens + " DARK SCREENS", CW/2, by + 62)
 
-        // Name entry prompt if active
+        // Leaderboard (shown once name has been submitted or skipped)
         const ne = nameEntryRef.current
-        if (ne.active && !ne.saved) {
-          ctx.fillStyle = COLORS.light; ctx.font = '8px "Press Start 2P", monospace'
-          ctx.fillText("NEW HIGH SCORE!", CW/2, 88)
-          ctx.fillStyle = COLORS.lightest; ctx.font = '6px "Press Start 2P", monospace'
-          ctx.fillText("ENTER NAME BELOW & PRESS SUBMIT", CW/2, 102)
-        }
-
-        // Leaderboard
         const lb = leaderboardRef.current
-        const lbY = ne.active && !ne.saved ? 116 : 88
+        const lbY = 90
         const lbH = 10 * 18 + 20
         ctx.fillStyle = COLORS.darkest; ctx.fillRect(20, lbY, CW-40, lbH)
         ctx.strokeStyle = COLORS.mid; ctx.lineWidth = 1; ctx.strokeRect(20, lbY, CW-40, lbH)
@@ -1149,10 +1199,31 @@ export default function DriveGame() {
           >
             THROW!
           </button>
-          {/* Name entry overlay — shown when player qualifies for leaderboard */}
+          {/* Name entry modal — fullscreen overlay, clean layout */}
           {nameEntryActive && (
-            <div className="absolute z-20 flex flex-col items-center gap-2"
-              style={{ top: "42%", left: "50%", transform: "translateX(-50%)", width: 240 }}>
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center"
+              style={{ background: "rgba(10,10,26,0.97)" }}>
+              {/* Score display */}
+              <div style={{
+                border: `2px solid ${COLORS.light}`, padding: "10px 24px",
+                marginBottom: 16, textAlign: "center",
+                background: COLORS.dark,
+              }}>
+                <div style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 7, color: COLORS.lightest, marginBottom: 6 }}>
+                  DELIVERIES COMPLETED
+                </div>
+                <div style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 28, color: COLORS.light }}>
+                  {gameState.current.totalDeliveries}
+                </div>
+              </div>
+              {/* NEW HIGH SCORE banner */}
+              <div style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 10, color: COLORS.light, marginBottom: 12, letterSpacing: 2 }}>
+                ★ NEW HIGH SCORE! ★
+              </div>
+              {/* Name input */}
+              <div style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 7, color: COLORS.lightest, marginBottom: 8 }}>
+                ENTER YOUR NAME:
+              </div>
               <input
                 autoFocus
                 maxLength={8}
@@ -1160,33 +1231,41 @@ export default function DriveGame() {
                 style={{
                   background: COLORS.darkest, color: COLORS.lightest,
                   border: `2px solid ${COLORS.lightest}`,
-                  fontFamily: '"Press Start 2P", monospace', fontSize: 12,
-                  padding: "6px 10px", width: "100%", textAlign: "center",
-                  outline: "none", letterSpacing: 3,
+                  fontFamily: '"Press Start 2P", monospace', fontSize: 13,
+                  padding: "8px 12px", width: 220, textAlign: "center",
+                  outline: "none", letterSpacing: 4, marginBottom: 12,
+                  display: "block",
                 }}
-                onChange={(e) => { nameEntryRef.current.name = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"") }}
+                onChange={(e) => {
+                  nameEntryRef.current.name = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"")
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     const n = nameEntryRef.current
-                    if (n.name.trim()) { n.saved = true; setNameEntryActive(false); saveScore(n.name, gameState.current.totalDeliveries) }
+                    const name = (n.name.trim() || "ANON").substring(0,8)
+                    n.saved = true; setNameEntryActive(false)
+                    saveScore(name, gameState.current.totalDeliveries)
                   }
                 }}
               />
               <button
                 style={{
                   background: COLORS.darkest, color: COLORS.light,
-                  border: `2px solid ${COLORS.light}`,
-                  fontFamily: '"Press Start 2P", monospace', fontSize: 9,
-                  padding: "6px 20px", cursor: "pointer", letterSpacing: 2, width: "100%",
+                  border: `3px solid ${COLORS.light}`,
+                  fontFamily: '"Press Start 2P", monospace', fontSize: 10,
+                  padding: "10px 0", cursor: "pointer", letterSpacing: 3,
+                  width: 220, display: "block", marginBottom: 10,
                 }}
                 onClick={() => {
                   const n = nameEntryRef.current
-                  const name = n.name.trim() || "ANON"
-                  n.saved = true
-                  setNameEntryActive(false)
+                  const name = (n.name.trim() || "ANON").substring(0,8)
+                  n.saved = true; setNameEntryActive(false)
                   saveScore(name, gameState.current.totalDeliveries)
                 }}
-              >SUBMIT SCORE</button>
+              >SUBMIT ▶</button>
+              <div style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 6, color: COLORS.mid, marginTop: 4 }}>
+                OR PRESS ENTER
+              </div>
             </div>
           )}
         </div>
