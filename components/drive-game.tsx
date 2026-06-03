@@ -443,49 +443,66 @@ export default function DriveGame() {
     x.fillText("HOW TO PLAY", CW/2, 186)
 
     // ── Steps ──
-    x.fillStyle = COLORS.darkest; x.fillRect(14, 194, CW-28, 248)
-    x.strokeStyle = COLORS.dark; x.lineWidth = 1; x.strokeRect(14, 194, CW-28, 248)
+    x.fillStyle = COLORS.darkest; x.fillRect(14, 194, CW-28, 272)
+    x.strokeStyle = COLORS.dark; x.lineWidth = 1; x.strokeRect(14, 194, CW-28, 272)
 
     // Step 1 — arrow
     x.fillStyle = COLORS.light
-    x.beginPath(); x.moveTo(CW/2, 222); x.lineTo(CW/2-10, 206); x.lineTo(CW/2+10, 206)
+    x.beginPath(); x.moveTo(CW/2, 226); x.lineTo(CW/2-12, 206); x.lineTo(CW/2+12, 206)
     x.closePath(); x.fill()
-    x.fillStyle = COLORS.lightest; x.font = '6px "Press Start 2P", monospace'
-    x.fillText("AN ARROW SWEEPS BACK & FORTH", CW/2, 236)
+    x.fillStyle = COLORS.lightest; x.font = '8px "Press Start 2P", monospace'
+    x.fillText("ARROW SWEEPS", CW/2, 242)
+    x.fillText("BACK & FORTH", CW/2, 254)
 
     x.strokeStyle = COLORS.dark; x.lineWidth = 1
-    x.beginPath(); x.moveTo(30, 246); x.lineTo(CW-30, 246); x.stroke()
+    x.beginPath(); x.moveTo(30, 264); x.lineTo(CW-30, 264); x.stroke()
 
-    // Step 2 — slot
-    x.fillStyle = COLORS.lightest; x.fillRect(CW/2-16, 254, 32, 10)
-    x.fillStyle = "#00ff66"; x.fillRect(CW/2-14, 252, 28, 4)
-    x.fillStyle = COLORS.lightest; x.font = '6px "Press Start 2P", monospace'
-    x.fillText("STOP IT OVER THE GREEN SLOT", CW/2, 278)
+    // Step 2 — green slot (matches in-game appearance exactly)
+    const slotMidX = CW/2
+    const slotY = 282
+    const slotW = 60, slotH = 10
+    // Shelf blocks either side
+    x.fillStyle = COLORS.dark
+    x.fillRect(slotMidX - slotW/2 - 30, slotY, 28, slotH)
+    x.fillRect(slotMidX + slotW/2 + 2, slotY, 28, slotH)
+    x.fillStyle = COLORS.mid
+    x.fillRect(slotMidX - slotW/2 - 30, slotY, 28, 2)
+    x.fillRect(slotMidX + slotW/2 + 2, slotY, 28, 2)
+    // Green slot
+    x.fillStyle = COLORS.driveInput
+    x.fillRect(slotMidX - slotW/2, slotY - 8, slotW, 8)
+    x.strokeStyle = COLORS.driveInput
+    x.lineWidth = 2
+    x.strokeRect(slotMidX - slotW/2 - 1, slotY - 9, slotW + 2, 10)
+    x.fillStyle = COLORS.lightest; x.font = '8px "Press Start 2P", monospace'
+    x.fillText("STOP OVER THE", CW/2, 308)
+    x.fillText("GREEN PROJECTOR SLOT", CW/2, 320)
 
-    x.beginPath(); x.moveTo(30, 288); x.lineTo(CW-30, 288); x.stroke()
+    x.beginPath(); x.moveTo(30, 332); x.lineTo(CW-30, 332); x.stroke()
 
-    // Step 3 — drive icon
-    x.fillStyle = COLORS.mid; x.fillRect(CW/2-8, 296, 16, 10)
-    x.fillStyle = COLORS.lightest; x.fillRect(CW/2-6, 298, 4, 3)
-    x.fillStyle = COLORS.light; x.fillRect(CW/2+1, 298, 4, 5)
-    x.fillStyle = COLORS.lightest; x.font = '6px "Press Start 2P", monospace'
-    x.fillText("TAP THROW / PRESS SPACE", CW/2, 318)
+    // Step 3 — throw instruction with tap note
+    x.fillStyle = COLORS.mid; x.fillRect(CW/2-10, 340, 20, 14)
+    x.fillStyle = COLORS.lightest; x.fillRect(CW/2-8, 342, 6, 4)
+    x.fillStyle = COLORS.light; x.fillRect(CW/2+1, 342, 4, 6)
+    x.fillStyle = COLORS.lightest; x.font = '8px "Press Start 2P", monospace'
+    x.fillText("TAP ANYWHERE OR", CW/2, 368)
+    x.fillText("PRESS SPACE TO THROW", CW/2, 380)
 
-    x.beginPath(); x.moveTo(30, 328); x.lineTo(CW-30, 328); x.stroke()
+    x.beginPath(); x.moveTo(30, 392); x.lineTo(CW-30, 392); x.stroke()
 
     // Step 4 — goal
-    x.fillStyle = COLORS.light; x.font = '6px "Press Start 2P", monospace'
-    x.fillText("LAND IN PROJECTOR SLOT!", CW/2, 346)
-    x.fillText("MISS = CRANK 3 STAYS DARK!", CW/2, 360)
-    x.fillText("DELIVER ALL 1126 SITES!", CW/2, 374)
+    x.fillStyle = COLORS.light; x.font = '8px "Press Start 2P", monospace'
+    x.fillText("LAND IN THE SLOT!", CW/2, 410)
+    x.fillText("MISS = DARK SCREEN!", CW/2, 424)
+    x.fillText("DELIVER ALL 1126!", CW/2, 438)
 
-    x.beginPath(); x.moveTo(30, 384); x.lineTo(CW-30, 384); x.stroke()
+    x.beginPath(); x.moveTo(30, 450); x.lineTo(CW-30, 450); x.stroke()
 
     // Tap to start
-    x.fillStyle = COLORS.lightest; x.font = '7px "Press Start 2P", monospace'
-    x.fillText("TAP / CLICK TO START", CW/2, 430)
+    x.fillStyle = COLORS.lightest; x.font = '8px "Press Start 2P", monospace'
+    x.fillText("TAP TO START", CW/2, 472)
     x.fillStyle = COLORS.light
-    x.fillRect(CW/2-12, 444, 6, 6); x.fillRect(CW/2-3, 444, 6, 6); x.fillRect(CW/2+6, 444, 6, 6)
+    x.fillRect(CW/2-12, 482, 6, 6); x.fillRect(CW/2-3, 482, 6, 6); x.fillRect(CW/2+6, 482, 6, 6)
   }, [screen])
 
   // Main game loop
@@ -824,10 +841,7 @@ export default function DriveGame() {
           ctx.fillText("DRIVE", (gl + gr) / 2, s.y - 20)
           ctx.fillText("INPUT", (gl + gr) / 2, s.y - 10)
         }
-        if (gs.state === "idle" && gs.level === index) {
-          ctx.fillStyle = "rgba(0,255,102,0.25)"
-          ctx.fillRect(gl - 4, s.y - 12, gr - gl + 8, 16)
-        }
+        // (glow removed — slot outline is sufficient indicator)
       }
     }
 
@@ -1067,16 +1081,28 @@ export default function DriveGame() {
     const drawHUD = () => {
       const gs = gameState.current
       ctx.fillStyle = COLORS.darkest; ctx.fillRect(0, 0, CW, HUD_H)
-      ctx.fillStyle = COLORS.light; ctx.font = '6px "Press Start 2P", monospace'
-      ctx.textAlign = "left"; ctx.fillText("CORYS DRIVE", 6, 10); ctx.fillText("DELIVERY", 6, 20)
-      ctx.fillStyle = COLORS.lightest; ctx.font = '7px "Press Start 2P", monospace'
-      ctx.textAlign = "right"
       const gs2 = gameState.current
       if (gs2.finalMode) {
         ctx.fillStyle = "#ffd632"
+        ctx.font = '9px "Press Start 2P", monospace'
+        ctx.textAlign = "right"
         ctx.fillText("FINAL SITE!", CW - 6, 19)
       } else {
-        ctx.fillText(gs2.totalDeliveries + " / 1126", CW - 6, 19)
+        // Number + SITE in bright cyan, then / 1126 in paler blue
+        const siteNum = String(gs2.totalDeliveries)
+        ctx.textAlign = "right"
+        // Measure widths to position correctly right-aligned
+        ctx.font = '8px "Press Start 2P", monospace'
+        const paleText = " / 1126"
+        ctx.fillStyle = "rgba(0,180,220,0.5)"
+        ctx.fillText(paleText, CW - 6, 19)
+        const paleW = ctx.measureText(paleText).width
+        ctx.fillStyle = COLORS.lightest
+        ctx.fillText(" SITE", CW - 6 - paleW, 19)
+        const siteW = ctx.measureText(" SITE").width
+        ctx.fillStyle = COLORS.lightest
+        ctx.font = '9px "Press Start 2P", monospace'
+        ctx.fillText(siteNum, CW - 6 - paleW - siteW, 20)
       }
     }
 
