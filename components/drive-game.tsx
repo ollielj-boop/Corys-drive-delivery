@@ -1161,24 +1161,22 @@ export default function DriveGame() {
         ctx.textAlign = "center"
 
         // Score box at top
-        const bx = CW/2-130, by = 14, bw = 260, bh = 88
+        const bx = CW/2-130, by = 14, bw = 260, bh = 72
         ctx.fillStyle = COLORS.dark; ctx.fillRect(bx, by, bw, bh)
         ctx.strokeStyle = COLORS.light; ctx.lineWidth = 2; ctx.strokeRect(bx, by, bw, bh)
         ctx.fillStyle = COLORS.lightest; ctx.font = '7px "Press Start 2P", monospace'
         ctx.fillText("DRIVES DELIVERED", CW/2, by + 16)
         ctx.fillStyle = COLORS.light; ctx.font = '22px "Press Start 2P", monospace'
         ctx.fillText(String(gs.totalDeliveries), CW/2, by + 46)
-        // Dark screens count — large number matching deliveries above
+        // Dark screens count — slightly larger than before, single line
         const darkScreens = Math.max(0, 1126 - gs.totalDeliveries)
-        ctx.fillStyle = "#ff6666"; ctx.font = '22px "Press Start 2P", monospace'
-        ctx.fillText(String(darkScreens), CW/2, by + 68)
-        ctx.font = '6px "Press Start 2P", monospace'
-        ctx.fillText("DARK SCREENS", CW/2, by + 82)
+        ctx.fillStyle = "#ff6666"; ctx.font = '8px "Press Start 2P", monospace'
+        ctx.fillText(darkScreens + " DARK SCREENS", CW/2, by + 62)
 
         // Leaderboard (shown once name has been submitted or skipped)
         const ne = nameEntryRef.current
         const lb = leaderboardRef.current
-        const lbY = 110
+        const lbY = 94
         const lbH = 10 * 18 + 20
         ctx.fillStyle = COLORS.darkest; ctx.fillRect(20, lbY, CW-40, lbH)
         ctx.strokeStyle = COLORS.mid; ctx.lineWidth = 1; ctx.strokeRect(20, lbY, CW-40, lbH)
